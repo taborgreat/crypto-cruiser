@@ -37,6 +37,7 @@ const r2d = new Render2D();
 const r3d = new Render3D();
 r3d.setOrbit(store.state.visual.orbit, true);
 r3d.setTopZoom(store.state.visual.topZoom, true);
+r3d.ensureSeen();
 viewport.appendChild(r2d.el);
 viewport.appendChild(r3d.el);
 if (!r3d.ok && store.state.visual.renderer === '3d') store.setVisual({ renderer: '2d' });
@@ -119,7 +120,13 @@ function confirmPedal(): boolean {
  * REAL mode (Update 14): every pedal is a real transaction, so the first press only arms it; the same key
  * again, the button again, or Enter within 4 s sends it. Practice sends at once.
  */
-async function pedal(action: PedalArg): Promise<void> {
+async function pedal(action: PedalArg, viaKey = false): Promise<void> {
+  if (viaKey && store.state.visual.chase) {
+    // CHASE (Update 23): the keys follow the picture: W pulls away (close part), ⇧W and Space escape (close
+    // everything), S lets it gain (add size). HARD (add size, no collateral) is a button only in CHASE.
+    const m: Partial<Record<PedalArg, PedalArg>> = { gas_light: 'brake_light', gas_hard: 'brake_full', brake_light: 'gas_light', brake_full: 'brake_full' };
+    action = m[action] ?? action;
+  }
   const live = store.state.status?.engine === 'live';
   if (action !== 'cruise' && action !== 'cruise_off') { // Update 17: in practice too: a stray key must do nothing
     if (armed && armed.action === action) { confirmPedal(); return; }
@@ -262,6 +269,7 @@ const hud = new Hud($('#hud'), {
   onStripClick: (t, price) => { if (!store.state.visual.chartOpen) store.setVisual({ chartOpen: true }); chart.focusTime(t, price); },
   onExits: () => exitsPanel.toggle(),
   onPage: (k) => pages.toggle(k),
+  onMirrorHeight: (px) => store.setVisual({ mirrorHeight: px }),
   onHorizon: (sec) => void api.settings(sec === null ? { autoHorizonRoom: true } : { horizonSec: sec, autoHorizonRoom: false }).catch((e: Error) => toast(e.message, 'err')),
 });
 const exitsEl = document.createElement('div');
@@ -310,7 +318,7 @@ function hoverCtx(): HoverCtx | null {
 installControls({
   confirmPedal: () => confirmPedal(),
   notice: (t) => toast(t, 'warn', 2500),
-  pedal: (a) => void pedal(a),
+  pedal: (a) => void pedal(a, true),
   go: () => void go(),
   nudgeLimit: (dir) => panel.nudgeLimit(dir),
   toggleInvert: () => { const inv = !(store.state.status?.mode.invert ?? false); void api.mode({ invert: inv }); },
@@ -356,6 +364,8 @@ installControls({
   const setHover = (hit: HoverHit | null) => {
     const s = store.state;
     if (s.hoverPinned) return;
+    // Update 23: the road, hills, fog, poles and plain traffic only hover when the setting is on; crowd cars that moved on a real trade always do
+    if (hit && !s.visual.hoverAll && (hit.kind === 'road' || hit.kind === 'hill' || hit.kind === 'fog' || hit.kind === 'pole' || (hit.kind === 'traffic' && !hit.text))) hit = null;
     s.hover = hit;
     const ctx = hoverCtx();
     if (hit && hit.kind !== 'text' && ctx) tooltip.show(hit.x, hit.y, tooltipLines(hit, ctx)); else tooltip.hide();
@@ -618,6 +628,7 @@ connectWs((m: ServerMsg) => {
     case 'anim': {
       const prev = store.state.anim;
       store.state.anim = { t: m.t, price: m.price, v: m.v };
+      if (m.flow && m.flow.length) r3d.pushFlow(m.flow); // Update 20: the crowd
       // the 1-second guarantee (Update 4): every trade event is an audible tick
       const fc = focusCar(store.state.frame, store.state.primaryGhostId);
       if (fc && prev && m.price !== prev.price && !store.state.results) sound.trade(fc.car.side * (m.price - prev.price) < 0);
@@ -803,6 +814,8 @@ function loop(now: number): void {
     visible,
     chase: s.visual.chase,
     poles: s.visual.poles,
+    crowd: s.visual.crowd,
+    traffic: s.visual.traffic,
     jolt,
     effects: s.visual.effects,
     anim: s.anim,

@@ -23,6 +23,18 @@ export interface Tick {
   bid?: number;
   ask?: number;
   source: string;   // 'doves' | 'coinbase' | 'hermes' | 'jupiter' | ...
+  side?: 'buy' | 'sell'; // Update 20: the taker side of the trade (the Coinbase ticker carries it)
+  size?: number;         // Update 20: trade size in the asset
+}
+
+/** Update 20: one real trade, classified for the crowd. */
+export interface FlowEvent {
+  t: number;
+  side: Side;      // +1 = buy (taker bought), −1 = sell
+  size: number;    // in the asset
+  sizeUsd: number;
+  ratio: number;   // size against the last minute's median trade
+  busy: number;    // trades per second over the last 10 s against the last hour, 0..3
 }
 
 /** Position state as the engines (paper/live) expose it. All USD unless noted. */
@@ -365,6 +377,8 @@ export interface StatusMsg {
   wallet: { address: string | null; solBalance: number | null; usdcBalance: number | null; solPrice: number | null; signer: 'phantom' | 'key'; positions: number };
   /** Update 13: the on-machine trading wallet for instant signing. */
   tradingWallet: { address: string | null; active: boolean };
+  /** Update 22: every connected wallet runs its own engine. `active` = where commands go, `driving` = the one on the road. */
+  wallets: Array<{ address: string; signer: 'phantom' | 'key'; active: boolean; driving: boolean; solBalance: number | null; usdcBalance: number | null; position: { market: Market; side: Side; leverage: number; sizeUsd: number; liq: number; pubkey: string | null } | null }>;
   liquidated: boolean;
   bankrollUsd: number;      // paper
   pendingTx: string | null; // live: description of an in-flight transaction
@@ -377,7 +391,7 @@ export interface StatusMsg {
 /** Messages server -> client over the websocket. */
 export type ServerMsg =
   | { type: 'frame'; frame: Frame }
-  | { type: 'anim'; t: number; price: number; v: number; source: string }
+  | { type: 'anim'; t: number; price: number; v: number; source: string; flow?: FlowEvent[] }
   | { type: 'status'; status: StatusMsg }
   | { type: 'event'; t: number; kind: string; message: string; detail?: unknown }
   | { type: 'hello'; serverTime: number };

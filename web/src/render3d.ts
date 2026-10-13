@@ -18,6 +18,7 @@ import {
   limitDistSec, packTopLanes, trafficCount, type HoverHit, type HoverKind, type LabelAnchor, type RenderOpts, type Renderer, type TopInfo, type TopMap,
 } from './renderer.js';
 import { clamp, lerp } from './format.js';
+import type { FlowEvent } from '../../shared/types.js';
 
 const ROAD_W = 11;
 const ROAD_LEN = 520;
@@ -30,7 +31,7 @@ const SEAT_LANES = 4;                                             // PREVIEW (Up
 const ORBIT_MIN = 0.4;
 const ORBIT_MAX = 80;
 const ORBIT_FP = 1.6;  // closer than this is first person: my own car is not drawn
-const ORBIT_HOME = { dist: 9, yaw: 0, pitch: 0.3 };
+const ORBIT_HOME = { dist: 7, yaw: 0, pitch: 0.26 }; // just behind the car
 // CHASE (Update 16): the mirror strip, as fractions of the viewport height from the top
 const REAR_TOP = 0.14;
 const REAR_H = 0.32;
@@ -60,7 +61,11 @@ const NEON_CYAN = 0x2ee6ff;
 const NEON_PINK = 0xff3fa4;
 const NEON_PURPLE = 0x8a5cff;
 
-interface TrafficCar { model: CarModel; lane: number; z: number; speed: number }
+interface TrafficCar {
+  model: CarModel; lane: number; z: number; speed: number;
+  // Update 20: a lane change in progress (signal, then a slide), cooldowns, a cut-in's road target, the big-print size
+  from: number; to: number; changeStart: number; changeDur: number; signalUntil: number; nextAllowed: number; bigUntil: number; leaveAt: number; zTo: number | null; edge: number;
+}
 interface CarModel { g: THREE.Group; bodyMat: THREE.MeshStandardMaterial; edgeMat: THREE.LineBasicMaterial; headMat: THREE.MeshBasicMaterial; brakes: THREE.MeshStandardMaterial; bloom: THREE.Sprite[]; glow: THREE.PointLight | null }
 interface GhostModel { car: CarModel; ahead: CarModel; monster?: CarModel; line: THREE.Mesh; entry: THREE.Mesh; trail: THREE.Line; trailGeo: THREE.BufferGeometry; aheadZ: number; carZ: number; impact: THREE.Sprite; side: Side; lane: number }
 
@@ -339,6 +344,9 @@ export class Render3D implements Renderer {
   /** Update 18: the seat draws the drawn lanes, packed like the bird's-eye; the road is that many lanes wide. */
   private seatLanes = 4;
   private laneTexN = new Map<number, THREE.CanvasTexture>();
+  /** Update 20: real trades waiting to move a car, and the field's change budget. */
+  private flowQueue: FlowEvent[] = [];
+  private nextChangeAt = 0;
   private topRoad!: THREE.Mesh;
   private topTex!: THREE.CanvasTexture;
   private breakA!: THREE.Mesh;
@@ -609,6 +617,8 @@ export class Render3D implements Renderer {
   dragBy(dxPx: number, dyPx: number): void { this.setOrbit({ yaw: this.orbitTarget.yaw + dxPx * 0.006, pitch: this.orbitTarget.pitch - dyPx * 0.006 }); }
   firstPerson(): boolean { return this.orbitTarget.dist < ORBIT_FP; }
   toggleFirstPerson(): void { this.setOrbit(this.firstPerson() ? { dist: ORBIT_HOME.dist, pitch: ORBIT_HOME.pitch } : { dist: ORBIT_MIN }); }
+  /** Update 21: a sanity floor: a saved orbit never loads us inside the car. */
+  ensureSeen(): void { if (this.orbitTarget.dist < 2) this.setOrbit({ ...ORBIT_HOME }, true); }
   resetOrbit(): void { this.setOrbit({ ...ORBIT_HOME }); }
   getTopZoom(): number { return this.topZoomTarget; }
   setTopZoom(z: number, snap = false): void { this.topZoomTarget = clamp(z, 0.3, 4); if (snap) this.topZoom = this.topZoomTarget; }
@@ -621,6 +631,12 @@ export class Render3D implements Renderer {
     return t;
   }
   private seatX(li: number, n: number): number { return (li - (n - 1) / 2) * LANE_W; }
+
+  /** Update 20: real trades from the fast feed; each may move one background car. */
+  pushFlow(events: FlowEvent[]): void {
+    this.flowQueue.push(...events);
+    if (this.flowQueue.length > 24) this.flowQueue.splice(0, this.flowQueue.length - 24);
+  }
 
   setLook(nx: number, ny: number): void {
     this.lookTx = clamp(nx, -1, 1);
@@ -646,10 +662,11 @@ export class Render3D implements Renderer {
       let o: THREE.Object3D | null = h.object;
       let kind: HoverKind | undefined;
       let id: string | undefined;
+      let text: string | undefined;
       let visible = true;
       while (o) {
         if (!o.visible) visible = false;
-        if (!kind && o.userData.kind) { kind = o.userData.kind as HoverKind; id = o.userData.id as string | undefined; }
+        if (!kind && o.userData.kind) { kind = o.userData.kind as HoverKind; id = o.userData.id as string | undefined; text = o.userData.text as string | undefined; }
         o = o.parent;
       }
       if (!visible || !kind) continue;
@@ -658,7 +675,7 @@ export class Render3D implements Renderer {
         id = ids[h.instanceId] ?? String(h.instanceId);
       }
       if (kind === 'road' && Math.abs(h.point.y) > 0.6) kind = 'hill';
-      return { kind, id, x, y };
+      return { kind, id, x, y, text };
     }
     return null;
   }
@@ -820,10 +837,11 @@ export class Render3D implements Renderer {
     const lift = horizonLift(o.horizon?.h);
     const hasCar = !!f?.car;
     // PREVIEW: four lanes of the LIVE lane width, so the road widens by 4/3 and the dashes follow (Update 14)
-    this.road.scale.x = lerp(this.road.scale.x, hasCar ? 1 : this.seatLanes / 3, clamp(dt * 4, 0, 1));
+    const laneN = hasCar ? (o.crowd ? 5 : 3) : this.seatLanes; // Update 20: with the crowd on, the LIVE road is five lanes wide
+    this.road.scale.x = lerp(this.road.scale.x, laneN / 3, clamp(dt * 4, 0, 1));
     const halfW = (ROAD_W / 2) * this.road.scale.x;
     const roadMat = this.road.material as THREE.MeshStandardMaterial;
-    const wantTex = hasCar ? this.laneTex : this.seatTex(this.seatLanes);
+    const wantTex = this.seatTex(laneN);
     if (roadMat.map !== wantTex) { roadMat.map = wantTex; roadMat.needsUpdate = true; }
     // PREVIEW: the chase camera rises and looks further so four lanes of cars in front are visible down the road
     this.previewLin = clamp(this.previewLin + (!hasCar && f ? 1 : -1) * (dt / 0.8), 0, 1);
@@ -837,7 +855,7 @@ export class Render3D implements Renderer {
     // Update 14: only the drawn lanes take room in the bird's-eye view
     const shown = f ? f.ghosts.filter((g) => f.rewind !== null || o.visible.has(g.id)) : [];
     const pack = packTopLanes(shown, o.bothSides, !!f?.rewind);
-    this.seatLanes = Math.max(1, pack.lanes);
+    this.seatLanes = Math.max(1, pack.lanes) + (o.crowd ? 2 : 0); // Update 20: a shoulder lane each side for the crowd
     this.topZoom = Math.exp(lerp(Math.log(this.topZoom), Math.log(this.topZoomTarget), clamp(dt * 8, 0, 1)));
     const td = this.topDims(pack.lanes);
     const yAt = this.applyHills(f, o, top);
@@ -936,7 +954,7 @@ export class Render3D implements Renderer {
     let laneShift = 0;
     if (!hasCar && f && f.ghosts.length) {
       const prim = f.ghosts.find((g) => g.id === o.primaryGhostId);
-      if (prim && pack.index.has(prim.id)) laneShift = this.seatX(pack.index.get(prim.id)!, pack.lanes);
+      if (prim && pack.index.has(prim.id)) laneShift = this.seatX(pack.index.get(prim.id)! + (o.crowd ? 1 : 0), this.seatLanes);
     }
     this.camX = lerp(this.camX, laneShift, clamp(dt * 3, 0, 1));
     pos.x += this.camX;
@@ -1025,7 +1043,7 @@ export class Render3D implements Renderer {
         seen.add(g.id);
         const m = this.ghostModel(g);
         const isPrimary = g.id === o.primaryGhostId && !hasCar;
-        const x = top ? this.topX(pack.index.get(g.id) ?? 0, pack.lanes) : this.seatX(pack.index.get(g.id) ?? 0, pack.lanes);
+        const x = top ? this.topX(pack.index.get(g.id) ?? 0, pack.lanes) : this.seatX((pack.index.get(g.id) ?? 0) + (o.crowd ? 1 : 0), this.seatLanes);
         m.car.g.visible = !(firstPerson && isPrimary && !g.crashed); // first person: the car I sit in is not drawn
         // Update 19: the focused lane is my car: solid and cyan-edged; the other lanes are ghosted in their colour
         setOpacity(m.car, isPrimary ? 1 : top ? 0.5 : 0.4);
@@ -1171,7 +1189,7 @@ export class Render3D implements Renderer {
       if (this.entryLine.visible) {
         // the line is where you merged: behind you once the trade is in profit, ahead of you while it is in loss
         const dEntry = car.side * (f.price - car.entry);
-        const words = dEntry >= 0 ? `${money(Math.abs(dEntry))} behind you · in profit` : `${money(Math.abs(dEntry))} ahead of you · in loss`;
+        const words = dEntry >= 0 ? `${money(Math.abs(dEntry))} behind you` : `${money(Math.abs(dEntry))} ahead of you`;
         this.anchor('entry', 'entry', 0, 0.4 + yAt(ez), ez, top ? undefined : `entry ${fmtPriceRaw(car.entry, MARKETS[f.market].priceDp)} · ${words}`, 'entry');
       }
       if (top) {
@@ -1240,24 +1258,90 @@ export class Render3D implements Renderer {
     } else this.ring.visible = false;
 
     // ---- traffic (driver seat only): rides the road flow, drifts at v_road - v_you ----
-    const want = f && !top ? trafficCount(f, o.view) : 0;
+    const want = f && !top && o.traffic ? trafficCount(f, o.view) + (o.crowd ? 2 : 0) : 0;
+    const laneN2 = hasCar ? (o.crowd ? 5 : 3) : this.seatLanes;
+    const center = (laneN2 - 1) / 2;
+    // my lane: the middle in LIVE; the focused lane in PREVIEW
+    let myLane = center;
+    if (!hasCar && f) { const prim = f.ghosts.find((g) => g.id === o.primaryGhostId); if (prim && pack.index.has(prim.id)) myLane = pack.index.get(prim.id)! + (o.crowd ? 1 : 0); }
+    const shoulders = laneN2 >= 3 ? [0, laneN2 - 1] : [0];
     while (this.traffic.length < want) {
       const i = this.traffic.length;
-      const model = makeCar([0x1f1b3a, 0x12303a, 0x2a1a44, 0x33261a][i % 4], 1, [NEON_PURPLE, 0x1fb6c9, NEON_PINK, 0xffd166][i % 4], false, false);
+      const edge = [NEON_PURPLE, 0x1fb6c9, NEON_PINK, 0xffd166][i % 4];
+      const model = makeCar([0x1f1b3a, 0x12303a, 0x2a1a44, 0x33261a][i % 4], 1, edge, false, false);
       tag(model.g, 'traffic');
       this.scene.add(model.g);
       this.pickables.push(model.g);
-      this.traffic.push({ model, lane: i % 2 === 0 ? 0 : 2, z: -hash01(i, 3) * ROAD_AHEAD * 0.8 + 10, speed: 0.85 + hash01(i, 5) * 0.3 });
+      const lane = shoulders[i % shoulders.length];
+      this.traffic.push({ model, lane, z: -hash01(i, 3) * ROAD_AHEAD * 0.8 + 10, speed: 0.85 + hash01(i, 5) * 0.3, from: lane, to: lane, changeStart: 0, changeDur: 0, signalUntil: 0, nextAllowed: 0, bigUntil: 0, leaveAt: 0, zTo: null, edge });
     }
+    // Update 20: the crowd is made of real trades. Each print on the fast feed may move one car: buys drift right,
+    // sells left (invert flips it); the odds grow with size against the last minute's median (a median print ~3 %,
+    // a 5× print always); a big print (8× and more) cuts in close ahead when it is against your side, behind you
+    // when it is with you, and that car leaves your lane a few seconds later. Signal for half a second, then a
+    // smooth slide; two seconds between moves per car; the whole field at most one change per two cars a second.
+    const mySide = focus ? focus.side : 0;
+    const dirSign = o.invert ? -1 : 1;
+    if (o.crowd && !top && want > 0) {
+      for (const ev of this.flowQueue.splice(0)) {
+        const p = clamp((ev.ratio - 1) / 4, 0.03, 1);
+        if (Math.random() > p) continue;
+        if (nowMs < this.nextChangeAt) continue;
+        const big = ev.ratio >= 8;
+        const dir = ev.side * dirSign;
+        const against = mySide !== 0 && ev.side * mySide < 0;
+        const free = this.traffic.filter((c, i) => i < want && nowMs >= c.nextAllowed && c.changeStart === 0);
+        if (!free.length) continue;
+        let car: TrafficCar;
+        let to: number;
+        let zTo: number | null = null;
+        if (big && mySide !== 0) {
+          car = free[Math.floor(Math.random() * free.length)];
+          to = myLane;
+          zTo = against ? -(9 + Math.random() * 4) : 7 + Math.random() * 3;
+          car.leaveAt = nowMs + 3500;
+        } else {
+          const movable = free.filter((c) => { const t = Math.round(c.lane) + dir; return t >= 0 && t < laneN2 && t !== myLane; });
+          if (!movable.length) continue;
+          car = movable[Math.floor(Math.random() * movable.length)];
+          to = Math.round(car.lane) + dir;
+        }
+        const dur = 1000 + Math.random() * 500;
+        car.from = Math.round(car.lane); car.to = to; car.signalUntil = nowMs + 500; car.changeStart = nowMs + 500; car.changeDur = dur; car.zTo = zTo;
+        car.nextAllowed = nowMs + 2000 + dur;
+        if (big) car.bigUntil = nowMs + 20_000;
+        car.model.g.userData.text = `${ev.side === 1 ? 'buy' : 'sell'} ${Math.round(ev.sizeUsd).toLocaleString()} · ${ev.ratio.toFixed(1)}× median · ${new Date(ev.t).toLocaleTimeString()}`;
+        this.nextChangeAt = nowMs + 2000 / Math.max(1, want);
+      }
+    } else this.flowQueue.length = 0;
     const rel = (focus ? focus.v_road - focus.v_you : 0) * o.gapScale * o.speedScale * dt; // + = they pull ahead
     for (let i = 0; i < this.traffic.length; i++) {
       const c = this.traffic[i];
       c.model.g.visible = i < want;
       if (!c.model.g.visible) continue;
-      c.z -= rel * c.speed + (c.speed - 1) * 0.6 * dt * o.speedScale;
-      if (c.z < -ROAD_AHEAD * 0.9) c.z = 30;
-      if (c.z > 40) c.z = -ROAD_AHEAD * 0.85;
-      c.model.g.position.set(hasCar ? LANE_X3[c.lane] : this.seatX(Math.min(c.lane, this.seatLanes - 1), this.seatLanes), yAt(c.z), c.z);
+      if (c.changeStart > 0) {
+        // a change in progress: the signal, then a smooth slide across; a cut-in also moves along the road
+        const k = clamp((nowMs - c.changeStart) / c.changeDur, 0, 1);
+        if (nowMs >= c.changeStart) {
+          c.lane = lerp(c.from, c.to, smoothstep(k));
+          if (c.zTo !== null) c.z = lerp(c.z, c.zTo, clamp(dt * 3, 0, 1));
+        }
+        if (k >= 1) { c.lane = c.to; c.changeStart = 0; c.zTo = null; }
+      } else if (c.leaveAt > 0 && nowMs >= c.leaveAt) {
+        // after a cut-in, drift back out of my lane
+        const dir = Math.round(c.lane) + 1 < laneN2 ? 1 : -1;
+        c.from = Math.round(c.lane); c.to = Math.round(c.lane) + dir; c.signalUntil = nowMs + 400; c.changeStart = nowMs + 400; c.changeDur = 1200; c.leaveAt = 0; c.nextAllowed = nowMs + 4000;
+      } else {
+        c.z -= rel * c.speed + (c.speed - 1) * 0.6 * dt * o.speedScale;
+        if (c.z < -ROAD_AHEAD * 0.9) c.z = 30;
+        if (c.z > 40) c.z = -ROAD_AHEAD * 0.85;
+      }
+      c.lane = clamp(c.lane, 0, laneN2 - 1);
+      const signaling = nowMs < c.signalUntil;
+      c.model.edgeMat.color.set(signaling && Math.floor(nowMs / 120) % 2 === 0 ? 0xffb020 : c.edge);
+      const bigK = nowMs < c.bigUntil ? 1.35 : 1;
+      c.model.g.scale.setScalar(lerp(c.model.g.scale.x, bigK, clamp(dt * 3, 0, 1)));
+      c.model.g.position.set(this.seatX(c.lane, laneN2), yAt(c.z), c.z);
     }
 
     // headway tint on the sky

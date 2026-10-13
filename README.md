@@ -481,3 +481,80 @@ seat went into a little bar instead. Split:
 - **The horizon from inside the drive**: click the H chip in the top row for the presets or auto.
 - **CHASE from above**: the bird's-eye now draws the police car in place of the car in front, so switching
   modes is visible there too; in the seat it is behind you as before.
+
+## Update 20: the crowd is made of real trades
+
+The background cars used to cruise. Now every print on the fast feed (the Coinbase ticker already carries
+the taker side and the size; the server now keeps them) is classified against the last minute's median
+size and the last hour's trade rate, and may move one car:
+
+- **Buys drift right, sells left** (invert flips it). A buy-heavy minute visibly leans the field before the
+  price has moved: the early tell. Order flow is the one piece of market information the road did not show.
+- **The odds grow with size**: a median print moves a car about 3 % of the time, a 5× print always.
+- **Big prints (8× the median and more) are big cars that cut in close**: ahead of you when the trade is
+  against your side, behind you when it is with you; the car leaves your lane a few seconds later.
+- **Readable**: the turn signal blinks for half a second, then a smooth one-second slide; two seconds between
+  moves per car; the whole field at most one change per two cars a second, so it never swarms. Hover a car
+  that moved: `buy $42,000 · 6.1× median · 20:21:08`.
+- **Dead tape, nobody changes lanes**: that calm is now a signal. Density is still volatility (how many
+  cars); movement is flow (how often they move).
+- **Red lights stay the car in front's**: the crowd signals amber, never red.
+- **Toggleable** (settings → Crowd, on by default). With it on the road gains a lane each side: five in LIVE,
+  a shoulder on each side of the lanes in PREVIEW. The two cars that matter are untouched.
+
+## Update 21: the cars are the focus
+
+- **The price is smaller.** It was the biggest thing on the page and covered the mirror on a laptop. It is a
+  22 px figure now, at the top; the cars are the focus.
+- **Side tags fit.** Every tag carried a −40 px margin for centring over its object; in the side column that
+  pushed the first 40 px off the left edge. Side tags have no margin now. The entry tag lost "in profit /
+  in loss"; it reads `entry 104.280 · $0.21 behind you`.
+- **The right column is wider and its words a point larger on screens over 1500 px.**
+- **Pedals say what they do.** GAS · add size, closer to it. HARD GAS · add size, no collateral. BACK OFF ·
+  add collateral, more room. BRAKE · close part, the exit. FULL BRAKE · CLOSE EVERYTHING, the exit, in red.
+  WITHDRAW · pull collateral, closer to it. CRUISE · trailing stop. The colours say add (green), exit (red),
+  danger (orange). The meanings are the same in TRAFFIC and CHASE: closing always buys you room; adding size
+  always brings it closer.
+- **The mirror is resizable** by the grip under it; it starts a little shorter.
+- **Popovers close** when you click anywhere else, so the horizon and ⋯ menus cannot get stuck open.
+- **Every load starts in 3D, in CHASE, with the camera just behind your car**; a saved camera inside the
+  car is reset.
+
+### Phantom over the LAN, and the traffic switch (Update 21)
+
+- **Other cars** (settings) removes the traffic entirely, leaving you and the car in front. **Crowd** is the
+  separate switch for whether the traffic changes lanes on real trades.
+- **Phantom freezes on a LAN address** because `http://10.0.0.x:5173` is not a secure origin, and Phantom
+  (extension and mobile) only answers on https or localhost: its popup never comes and the connect promise
+  hangs. The connect now times out and says so. Two ways through: use the trading wallet (instant signing)
+  on the other device, which needs no Phantom; or run `npm run dev:lan:https` and open the **https** address
+  the server prints. The certificate is self-signed, so the browser shows a warning once; accept it and
+  Phantom connects. The API and the websocket are proxied over the same https origin.
+
+## Update 22: one engine per wallet
+
+- **Phantom and the trading wallet can each hold a position at the same time.** Every connected wallet runs
+  its own live engine (its own chain reads, fills, trailing stop). The wallet box lists them, one row each,
+  with the position it holds and a button: **RESUME** puts that wallet's position on the road, **use**
+  makes a wallet without a position the one Go opens on, **DRIVING** marks the one on the road. Events from
+  a wallet that is not on the road arrive as toasts tagged with the wallet; a trading-wallet stop still
+  signs itself; a Phantom stop asks you to switch to that wallet.
+- **REAL is never blocked by a position.** Only a wallet that already holds one cannot open a second; its
+  row says RESUME instead.
+- **The PRACTICE / REAL tabs follow the server**, so a resumed real position no longer looks like practice.
+- "Back to Phantom" no longer disconnects the trading wallet; it keeps running in the background.
+
+## Update 23: the pedals follow the picture
+
+- **In CHASE the pedals are re-labelled and re-keyed** so the picture and the action agree: **W PULL AWAY**
+  closes part (the exit; more room), **⇧W or Space ESCAPE** closes everything, **S LET IT GAIN** adds size
+  (it closes in), **C BACK OFF** adds collateral, **X WITHDRAW** pulls collateral (it closes in), **T
+  CRUISE** is the trailing stop, and HARD (add size, no collateral) is a button only. In TRAFFIC the pedals
+  are as before: gas adds size and closes on the car in front, brake closes size and opens room. Same
+  actions underneath, same colours: red is always the exit.
+- **Background hovers** (road flow, hills, fog, poles, plain traffic) are behind a setting, off by default;
+  crowd cars that moved on a real trade still show their trade.
+- **Collateral is free to move, size is not.** Adding or withdrawing collateral costs only the transaction
+  fee (no Jupiter fee); it changes your room, not your exposure. Changing size costs 6 bps plus impact each
+  way. Jupiter's limits: withdrawing must leave the position under 250× and above its minimum collateral;
+  adding must keep it above 1.1×.

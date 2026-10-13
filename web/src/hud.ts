@@ -31,16 +31,29 @@ export interface HudHandlers {
   onPage(kind: 'trades' | 'conditions'): void;
   /** Update 19: the horizon from the chip; null = back to auto. */
   onHorizon(sec: number | null): void;
+  /** Update 21: the mirror canvas was resized by its grip. */
+  onMirrorHeight(px: number): void;
 }
 
-const PEDALS: Array<{ key: string; label: string; action: PedalAction; danger?: boolean }> = [
-  { key: 'W', label: 'gas', action: 'gas_light' },
-  { key: '⇧W', label: 'HARD gas', action: 'gas_hard', danger: true },
-  { key: 'C', label: 'back off', action: 'coast' },
-  { key: 'S', label: 'brake', action: 'brake_light' },
-  { key: '␣', label: 'FULL brake', action: 'brake_full' },
-  { key: 'X', label: 'withdraw', action: 'withdraw', danger: true },
-  { key: 'T', label: 'trailing stop', action: 'cruise' },
+// Update 21: every pedal says what it does to the position; the exit is unmistakable and red
+const PEDALS: Array<{ key: string; label: string; sub: string; action: PedalAction; cls: 'add' | 'close' | 'sellall' | 'danger' | 'cruise' }> = [
+  { key: 'W', label: 'GAS', sub: 'add size · closer to it', action: 'gas_light', cls: 'add' },
+  { key: '⇧W', label: 'HARD GAS', sub: 'add size, no collateral', action: 'gas_hard', cls: 'danger' },
+  { key: 'C', label: 'BACK OFF', sub: 'add collateral · more room', action: 'coast', cls: 'add' },
+  { key: 'S', label: 'BRAKE', sub: 'close part · the exit', action: 'brake_light', cls: 'close' },
+  { key: '␣', label: 'FULL BRAKE', sub: 'CLOSE EVERYTHING · the exit', action: 'brake_full', cls: 'sellall' },
+  { key: 'X', label: 'WITHDRAW', sub: 'pull collateral · closer to it', action: 'withdraw', cls: 'danger' },
+  { key: 'T', label: 'CRUISE', sub: 'trailing stop', action: 'cruise', cls: 'cruise' },
+];
+// Update 23: in CHASE the pedals follow the picture: gas pulls away from it (closing buys room), brake lets it gain
+const PEDALS_CHASE: typeof PEDALS = [
+  { key: 'W', label: 'PULL AWAY', sub: 'close part · the exit', action: 'brake_light', cls: 'close' },
+  { key: '⇧W / ␣', label: 'ESCAPE', sub: 'CLOSE EVERYTHING · the exit', action: 'brake_full', cls: 'sellall' },
+  { key: 'C', label: 'BACK OFF', sub: 'add collateral · more room', action: 'coast', cls: 'add' },
+  { key: 'S', label: 'LET IT GAIN', sub: 'add size · it closes in', action: 'gas_light', cls: 'add' },
+  { key: '·', label: 'HARD', sub: 'add size, no collateral', action: 'gas_hard', cls: 'danger' },
+  { key: 'X', label: 'WITHDRAW', sub: 'pull collateral · it closes in', action: 'withdraw', cls: 'danger' },
+  { key: 'T', label: 'CRUISE', sub: 'trailing stop', action: 'cruise', cls: 'cruise' },
 ];
 
 const MAX_TOASTS = 3;
@@ -199,6 +212,26 @@ export class Hud {
     this.needle = el<SVGLineElement>(root, '#needle');
     this.arc = el<SVGPathElement>(root, '#speedoArc');
     this.mirrorCanvas = el<HTMLCanvasElement>(root, '#mirrorCanvas');
+    // Update 21: a grip under the mirror; drag to resize
+    {
+      const grip = document.createElement('div');
+      grip.className = 'm-grip';
+      grip.title = 'drag to resize the mirror';
+      this.mirrorCanvas.insertAdjacentElement('afterend', grip);
+      let startY = 0, startH = 0;
+      grip.addEventListener('pointerdown', (e) => { startY = e.clientY; startH = this.mirrorH; this.mirrorDragging = true; grip.setPointerCapture(e.pointerId); e.preventDefault(); });
+      grip.addEventListener('pointermove', (e) => { if (!this.mirrorDragging) return; this.setMirrorHeight(Math.max(48, Math.min(320, startH + (e.clientY - startY)))); });
+      const end = (e: PointerEvent) => { if (!this.mirrorDragging) return; this.mirrorDragging = false; try { grip.releasePointerCapture(e.pointerId); } catch { /* ignore */ } this.h.onMirrorHeight(this.mirrorH); };
+      grip.addEventListener('pointerup', end);
+      grip.addEventListener('pointercancel', end);
+    }
+    // Update 21: popovers close on a click anywhere else
+    document.addEventListener('pointerdown', (e) => {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (!this.$.hzMenu.hidden && !this.$.hzMenu.contains(t) && t !== this.$.chipHorizon) this.$.hzMenu.hidden = true;
+      if (!this.$.hudMenu.hidden && !this.$.hudMenu.contains(t) && !t.closest('#btnMore')) this.$.hudMenu.hidden = true;
+    });
     this.stripCanvas = el<HTMLCanvasElement>(root, '#hwStrip');
 
     const ticks = this.$.speedoTicks;
@@ -210,14 +243,7 @@ export class Hud {
       t.textContent = `${v}x`;
       ticks.appendChild(t);
     }
-    for (const p of PEDALS) {
-      const b = document.createElement('div');
-      b.className = 'pedal' + (p.danger ? ' danger' : '');
-      b.dataset.action = p.action;
-      b.innerHTML = `<kbd>${p.key}</kbd>${p.label}`;
-      b.addEventListener('click', () => this.h.onPedal(p.action));
-      this.$.pedals.appendChild(b);
-    }
+    this.buildPedals('traffic');
     this.$.helpTable.innerHTML = KEY_HELP.map(([k, d]) => `<tr><td>${k}</td><td>${d}</td></tr>`).join('');
     // Update 19: the horizon from inside the drive
     this.$.hzMenu.innerHTML = `<span class="muted">horizon</span>${HORIZON_CHIPS.map((c) => `<button data-hz="${c.sec}">${c.label}</button>`).join('')}<button data-hz="auto">auto</button>`;
@@ -290,9 +316,30 @@ export class Hud {
     const b = this.$.pedals.querySelector<HTMLElement>(`[data-action="${action}"]`);
     if (b) b.classList.add('armed');
   }
+  private pedalMode: 'traffic' | 'chase' = 'traffic';
+  /** Update 23: the pedal row for a mode; CHASE relabels and re-keys so the picture and the action agree. */
+  private buildPedals(mode: 'traffic' | 'chase'): void {
+    this.pedalMode = mode;
+    this.$.pedals.innerHTML = '';
+    for (const p of mode === 'chase' ? PEDALS_CHASE : PEDALS) {
+      const b = document.createElement('div');
+      b.className = `pedal ${p.cls}`;
+      b.dataset.action = p.action;
+      b.innerHTML = `<span class="pk"><kbd>${p.key}</kbd> ${p.label}</span><small>${p.sub}</small>`;
+      b.addEventListener('click', () => this.h.onPedal(p.action));
+      this.$.pedals.appendChild(b);
+    }
+  }
   pedalName(action: string): string {
-    const p = PEDALS.find((x) => x.action === action);
+    const p = (this.pedalMode === 'chase' ? PEDALS_CHASE : PEDALS).find((x) => x.action === action);
     return p ? `${p.key} ${p.label}` : action;
+  }
+
+  private mirrorH = 96;
+  private mirrorDragging = false;
+  private setMirrorHeight(px: number): void {
+    this.mirrorH = px;
+    this.mirrorCanvas.style.height = `${px}px`;
   }
 
   flash(action: string): void {
@@ -405,6 +452,8 @@ export class Hud {
     this.$.btnMute.classList.toggle('on', s.visual.muted);
     this.$.btnChase.classList.toggle('on', s.visual.chase);
     this.$.btnChase.textContent = s.visual.chase ? 'CHASE' : 'TRAFFIC'; // Update 18: the button names the mode you are in
+    if ((s.visual.chase ? 'chase' : 'traffic') !== this.pedalMode) this.buildPedals(s.visual.chase ? 'chase' : 'traffic');
+    if (!this.mirrorDragging && s.visual.mirrorHeight !== this.mirrorH) this.setMirrorHeight(s.visual.mirrorHeight);
     // CHASE (Update 16): same numbers, relabelled; the mirror strip frame shows in the seat view
     this.$.hwLabel.textContent = s.visual.chase ? 'TIME UNTIL CAUGHT' : 'TIME TO LIQUIDATION';
     this.$.rGapL.textContent = s.visual.chase ? 'DISTANCE AHEAD OF IT' : 'TO LIQUIDATION';
@@ -626,7 +675,7 @@ export class Hud {
 
   /** Update 10 §2: a rear-view mirror. Up is toward liquidation; every line labelled on itself. */
   private drawMirror(f: Frame, c: CarFrame, redMoments: number[]): void {
-    const sz = this.sizeCanvas(this.mirrorCanvas, 112);
+    const sz = this.sizeCanvas(this.mirrorCanvas, this.mirrorH);
     if (!sz) return;
     const { ctx, w, h } = sz;
     ctx.clearRect(0, 0, w, h);

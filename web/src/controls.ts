@@ -39,6 +39,7 @@ export const KEY_HELP: Array<[string, string]> = [
   ['S', 'brake (partial close)'],
   ['Space', 'full brake (close all) · in rewind: pause / resume'],
   ['confirm', 'every pedal and every state-changing hotkey needs a second push (pedals: or Enter); a stray key does nothing'],
+  ['in CHASE', 'W pulls away (close part) · ⇧W or Space escape (close everything) · S lets it gain (add size) · C back off · X withdraw'],
   ['mouse', 'move it up to rise and look over your car at the car in front; sideways to glance'],
   ['X', 'withdraw collateral (danger)'],
   ['T / Shift+T', 'trailing stop on / off'],

@@ -71,6 +71,9 @@ export class SettingsPanel {
         <label for="vis_renderer">Renderer</label><select id="vis_renderer"><option value="3d">3D freeway</option><option value="2d">2D top-down</option></select>
         <label for="vis_topDown">Top-down in preview (V)<small>bird's-eye before Go; the seat after</small></label><input id="vis_topDown" type="checkbox">
         <label for="vis_poles">Roadside poles<small>the T-shaped lights that scroll at your speed</small></label><input id="vis_poles" type="checkbox">
+        <label for="vis_traffic">Other cars<small>the traffic around you; off leaves only you and the car in front</small></label><input id="vis_traffic" type="checkbox">
+        <label for="vis_hoverAll">Background hovers<small>road flow, hills, fog, poles and plain traffic; off: only the cars, lines and tags</small></label><input id="vis_hoverAll" type="checkbox">
+        <label for="vis_crowd">Crowd<small>the other cars change lanes on real trades: buys right, sells left, big prints cut in; the road is wider</small></label><input id="vis_crowd" type="checkbox">
         <label for="vis_bothSides">Both sides in preview<small>four LONG lanes left, four SHORT lanes right: 5 m · 1 m · 10 s · now</small></label><input id="vis_bothSides" type="checkbox">
         <label for="vis_quality">Quality<small>low = no bloom, 30 fps, pixel ratio 1</small></label><select id="vis_quality"><option value="high">high</option><option value="low">low</option></select>
         <label for="vis_speedScale">Visual speed scale (K_scroll base)<small>road m/s per unit = this × gap scale × 60/H</small></label><input id="vis_speedScale" type="number" min="0.1" max="200" step="0.5">
@@ -104,6 +107,9 @@ export class SettingsPanel {
     vis('vis_renderer').addEventListener('change', (e) => this.store.setVisual({ renderer: (e.target as HTMLSelectElement).value as '2d' | '3d' }));
     vis('vis_topDown').addEventListener('change', (e) => this.store.setVisual({ topDown: (e.target as HTMLInputElement).checked }));
     vis('vis_poles').addEventListener('change', (e) => this.store.setVisual({ poles: (e.target as HTMLInputElement).checked }));
+    vis('vis_crowd').addEventListener('change', (e) => this.store.setVisual({ crowd: (e.target as HTMLInputElement).checked }));
+    vis('vis_traffic').addEventListener('change', (e) => this.store.setVisual({ traffic: (e.target as HTMLInputElement).checked }));
+    vis('vis_hoverAll').addEventListener('change', (e) => this.store.setVisual({ hoverAll: (e.target as HTMLInputElement).checked }));
     vis('vis_bothSides').addEventListener('change', (e) => this.store.setVisual({ bothSides: (e.target as HTMLInputElement).checked }));
     vis('vis_quality').addEventListener('change', (e) => this.store.setVisual({ quality: (e.target as HTMLSelectElement).value as 'high' | 'low' }));
     vis('vis_speedScale').addEventListener('change', (e) => this.store.setVisual({ speedScale: Number((e.target as HTMLInputElement).value) || 8 }));
@@ -171,6 +177,9 @@ export class SettingsPanel {
     setIfIdle('vis_chartHeight', String(v.chartHeight));
     (q('vis_topDown') as HTMLInputElement).checked = v.topDown;
     (q('vis_poles') as HTMLInputElement).checked = v.poles;
+    (q('vis_crowd') as HTMLInputElement).checked = v.crowd;
+    (q('vis_traffic') as HTMLInputElement).checked = v.traffic;
+    (q('vis_hoverAll') as HTMLInputElement).checked = v.hoverAll;
     (q('vis_bothSides') as HTMLInputElement).checked = v.bothSides;
     (q('vis_sound') as HTMLInputElement).checked = v.sound;
     (q('vis_music') as HTMLInputElement).checked = v.music;

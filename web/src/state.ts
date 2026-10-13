@@ -28,6 +28,10 @@ export interface VisualSettings {
   muted: boolean;       // Update 16: everything silent
   chase: boolean;       // Update 16: CHASE mode: the car in front becomes the monster behind you
   poles: boolean;       // Update 19: the roadside poles that scroll at your speed (off: they read as noise)
+  crowd: boolean;       // Update 20: the other cars change lanes on real trades
+  mirrorHeight: number; // Update 21: the mirror panel's canvas, px (drag its grip)
+  traffic: boolean;     // Update 21: the other cars at all (off: only you and the car in front)
+  hoverAll: boolean;    // Update 23: hovers on the road, hills, fog, poles and plain traffic (off: main objects only)
 }
 
 export const DEFAULT_VISUAL: VisualSettings = {
@@ -52,11 +56,15 @@ export const DEFAULT_VISUAL: VisualSettings = {
   lanesPicked: [],
   tags: 'side',
   tagsChosen: false,
-  orbit: { dist: 9, yaw: 0, pitch: 0.3 },
+  orbit: { dist: 7, yaw: 0, pitch: 0.26 },
   topZoom: 1,
   muted: false,
-  chase: false,
+  chase: true,
   poles: false,
+  crowd: true,
+  mirrorHeight: 96,
+  traffic: true,
+  hoverAll: false,
 };
 
 export interface UiEvent { t: number; kind: string; message: string }
@@ -188,6 +196,11 @@ function loadVisual(): VisualSettings {
       if (!['on', 'faded', 'side', 'off'].includes(v.tags)) v.tags = 'side';
       if (!v.tagsChosen) v.tags = 'side';
       if (!(v.topZoom > 0)) v.topZoom = 1;
+      if (!(v.mirrorHeight >= 48)) v.mirrorHeight = 96;
+      // Update 21: every load starts in 3D, in CHASE, with the camera just behind the car
+      v.renderer = '3d';
+      v.chase = true;
+      v.orbit = { ...DEFAULT_VISUAL.orbit };
       return v;
     }
   } catch { /* ignore */ }

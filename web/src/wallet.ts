@@ -38,7 +38,13 @@ export function hasPhantom(): boolean {
 export async function connectPhantom(onlyIfTrusted = false): Promise<string> {
   const p = getPhantom();
   if (!p) throw new Error('Phantom is not installed. Get it at phantom.com, then reload.');
-  const res = await p.connect(onlyIfTrusted ? { onlyIfTrusted: true } : undefined);
+  // Update 21: Phantom answers only on a secure origin (https, or localhost). On a plain http LAN address its
+  // popup never comes and the promise hangs forever; time out and say why instead of freezing the panel.
+  const insecure = !window.isSecureContext;
+  const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error(insecure
+    ? `Phantom did not answer. This page is on ${location.origin}, which is not a secure origin, and Phantom only works over https or on localhost. Use the trading wallet (instant signing) here, or run npm run dev:lan:https and open the https address.`
+    : 'Phantom did not answer after 25 s. Open the Phantom window, or reload and try again.')), onlyIfTrusted ? 8000 : 25_000));
+  const res = await Promise.race([p.connect(onlyIfTrusted ? { onlyIfTrusted: true } : undefined), timeout]);
   return res.publicKey.toString();
 }
 

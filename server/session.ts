@@ -29,6 +29,7 @@ import type { Engine, EngineEvent, PedalResult } from './engine/types.js';
 import { Rewind } from './rewind.js';
 import { ConditionsEngine } from './conditions.js';
 import type { ConditionsState } from '../shared/conditions.js';
+import type { FlowEvent } from '../shared/types.js';
 import { exitHit } from '../shared/exits.js';
 import { TradingWallet } from './trading.js';
 import { log } from './log.js';
@@ -48,6 +49,8 @@ export class Session extends EventEmitter {
   marketKin: MarketKinematics;
   paper: PaperEngine;
   live = new LiveEngine();
+  /** Update 22: one live engine per connected wallet; `live` is the active one (commands, Go). */
+  private lives = new Map<string, LiveEngine>();
   trading = new TradingWallet();
   engine: Engine;
   mode: ModeState = { view: 'price-only', invert: false, live: false };
@@ -72,6 +75,11 @@ export class Session extends EventEmitter {
   private liqTrack: { key: string; liq: number; t: number; rate: number } | null = null;
   /** Update 16: time to liquidation smoothed in log space (τ 2.5 s) per car, so the panel stops flickering. */
   private hwSmooth = new Map<string, { t: number; lh: number | null; lp: number | null; v: number }>();
+  /** Update 20: order flow for the crowd: the last minute's sizes (median), per-minute counts (the hour's rate). */
+  private flowSizes: Array<{ t: number; size: number }> = [];
+  private flowMinute = new Array<number>(60).fill(0);
+  private flowMinuteIdx = -1;
+  private flowPending: FlowEvent[] = [];
   // horizon
   private hEff: number;
   private gapAtEntry: { key: string; gap: number } | null = null;
@@ -121,8 +129,7 @@ export class Session extends EventEmitter {
       this.conditions.onTick(t.t, t.price);
       this.layers.divergence = this.feed.divergence();
       this.feed.candleCount = this.layers.c1m.candles.length;
-      if (this.market === 'SOL-PERP') this.live.solPrice = t.price;
-      this.live.markPrice = t.price;
+      for (const e of this.allLives()) { if (this.market === 'SOL-PERP') e.solPrice = t.price; e.markPrice = t.price; }
     });
     this.feed.on('quote', (t: Tick) => this.layers.onQuote(t));
     // Update 3: the animation price drives the velocity EMAs at trade rate.
@@ -131,10 +138,13 @@ export class Session extends EventEmitter {
       this.marketKin.tick(a.t, a.price);
       this.lastKinT = a.t;
       this.lastAnim = a;
+      const flowEv = this.onFlow(a);
+      if (flowEv) { this.flowPending.push(flowEv); if (this.flowPending.length > 12) this.flowPending.shift(); }
       const now = Date.now();
       if (now - this.lastAnimBroadcast >= ANIM_BROADCAST_MS) {
         this.lastAnimBroadcast = now;
-        this.broadcast({ type: 'anim', t: a.t, price: a.price, v: this.marketKin.v, source: a.source });
+        const flow = this.flowPending.length ? this.flowPending.splice(0) : undefined;
+        this.broadcast({ type: 'anim', t: a.t, price: a.price, v: this.marketKin.v, source: a.source, ...(flow ? { flow } : {}) });
       }
     });
     await this.bootMarket(this.market);
@@ -165,7 +175,7 @@ export class Session extends EventEmitter {
       const res = await fetch(`${ENV.jupApi}/market-stats?mint=${MARKETS['SOL-PERP'].mint}`);
       const j = (await res.json()) as { price?: string };
       const p = Number(j.price);
-      if (p > 0) this.live.solPrice = p;
+      if (p > 0) for (const e of this.allLives()) e.solPrice = p;
     } catch { /* ignore */ }
   }
 
@@ -196,6 +206,7 @@ export class Session extends EventEmitter {
       settings: this.settings,
       wallet: { address: this.live.wallet, solBalance: this.live.solBalance, usdcBalance: this.live.usdcBalance, solPrice: this.live.solPrice, signer: this.live.signer, positions: this.live.positions.length },
       tradingWallet: { address: this.trading.address, active: this.live.signer === 'key' && !!this.live.wallet },
+      wallets: this.walletSummaries(),
       liquidated: this.liquidated,
       bankrollUsd: this.paper.bankrollUsd,
       pendingTx: this.live.pendingTx ? this.live.pendingTx.description : this.live.pendingSign ? `Awaiting signature: ${this.live.pendingSign.description}` : null,
@@ -281,6 +292,24 @@ export class Session extends EventEmitter {
    * pure trend said "not closing" too often). The trend wins when it closes faster. The time is then smoothed in
    * log space (τ 1.5 s); "not closing" only when neither the smoothed speed nor the trend closes.
    */
+  /** Update 20: one print classified: size against the last minute's median, busyness against the last hour. */
+  private onFlow(a: Tick): FlowEvent | null {
+    if (!a.side || a.size === undefined || !(a.size > 0)) return null;
+    const t = a.t;
+    this.flowSizes.push({ t, size: a.size });
+    while (this.flowSizes.length && this.flowSizes[0].t < t - 60_000) this.flowSizes.shift();
+    const sorted = this.flowSizes.map((x) => x.size).sort((p, q) => p - q);
+    const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : a.size;
+    const mi = Math.floor(t / 60_000) % 60;
+    if (mi !== this.flowMinuteIdx) { this.flowMinute[mi] = 0; this.flowMinuteIdx = mi; }
+    this.flowMinute[mi]++;
+    const hourRate = this.flowMinute.reduce((s, n) => s + n, 0) / 3600;
+    let n10 = 0;
+    for (let i = this.flowSizes.length - 1; i >= 0 && this.flowSizes[i].t >= t - 10_000; i--) n10++;
+    const busy = hourRate > 0 ? Math.max(0, Math.min(3, n10 / 10 / hourRate)) : 1;
+    return { t, side: a.side === 'buy' ? 1 : -1, size: a.size, sizeUsd: a.size * a.price, ratio: median > 0 ? a.size / median : 1, busy };
+  }
+
   private smoothHeadway(key: string, t: number, gap: number, vClose: number, vCloseTrend: number, aClose: number): [number, number] {
     const st = this.hwSmooth.get(key) ?? { t, lh: null, lp: null, v: vClose };
     const dt = Math.max(0, (t - st.t) / 1000);
@@ -429,6 +458,11 @@ export class Session extends EventEmitter {
     const pos0 = this.engine.position;
     const events = this.engine.tick(t, price, this.layers.hourlyRate(pos0?.side ?? this.focusGhost()?.side ?? -1));
     for (const ev of events) this.handleEvent(ev);
+    // Update 22: every other connected wallet keeps its own engine ticking; its events arrive tagged with the wallet
+    for (const e of this.allLives()) {
+      if (e === this.engine || !e.wallet) continue;
+      for (const ev of e.tick(t, price, this.layers.hourlyRate(e.position?.side ?? -1))) this.handleSideEvent(e, ev);
+    }
     const p = this.engine.position;
     this.checkExits(t, price, p);
 
@@ -495,17 +529,7 @@ export class Session extends EventEmitter {
     const t = Date.now();
     // instant signing: trailing-stop / exit transactions are signed here instead of asking the browser
     if (ev.kind === 'sign_request' && this.live.canAutoSign()) {
-      const sign = ev.detail as SignRequest;
-      void (async () => {
-        try {
-          const r = await this.live.execute(sign.id, this.live.signLocally(sign.txB64));
-          this.broadcast({ type: 'event', t: Date.now(), kind: r.ok ? 'info' : 'error', message: `${sign.description} · ${r.ok ? 'signed by the trading wallet · ' + r.message : r.message}` });
-        } catch (err) {
-          this.live.cancelSign(sign.id);
-          this.broadcast({ type: 'event', t: Date.now(), kind: 'error', message: `Trading wallet could not sign: ${(err as Error).message}` });
-        }
-        this.broadcastStatus(true);
-      })();
+      void this.signWith(this.live, ev.detail as SignRequest);
       return;
     }
     this.broadcast({ type: 'event', t, kind: ev.kind, message: ev.message, detail: ev.detail });
@@ -716,7 +740,7 @@ export class Session extends EventEmitter {
     if (market === this.market) return { ok: true, message: market };
     if (this.rewind) this.stopRewind('market changed');
     this.market = market;
-    this.live.market = market;
+    for (const e of this.allLives()) e.market = market;
     await this.bootMarket(market);
     void this.refreshSolPrice();
     this.broadcastStatus(true);
@@ -794,6 +818,61 @@ export class Session extends EventEmitter {
     return res;
   }
 
+  /** Update 22: sign a request with a given wallet's engine (instant signing) and report. */
+  private async signWith(e: LiveEngine, sign: SignRequest): Promise<void> {
+    try {
+      const r = await e.execute(sign.id, e.signLocally(sign.txB64));
+      this.broadcast({ type: 'event', t: Date.now(), kind: r.ok ? 'info' : 'error', message: `${sign.description} · ${r.ok ? 'signed by the trading wallet · ' + r.message : r.message}` });
+    } catch (err) {
+      e.cancelSign(sign.id);
+      this.broadcast({ type: 'event', t: Date.now(), kind: 'error', message: `Trading wallet could not sign: ${(err as Error).message}` });
+    }
+    this.broadcastStatus(true);
+  }
+
+  /** Update 22: an event from a wallet that is not on the road: tagged, never a results card, signed if it can be. */
+  private handleSideEvent(e: LiveEngine, ev: EngineEvent): void {
+    const tag = e.wallet ? `[${e.signer === 'key' ? 'trading wallet' : 'Phantom'} ${e.wallet.slice(0, 4)}…] ` : '';
+    if (ev.kind === 'sign_request') {
+      const sign = ev.detail as SignRequest;
+      if (e.canAutoSign()) { void this.signWith(e, sign); return; }
+      e.cancelSign(sign.id);
+      this.broadcast({ type: 'event', t: Date.now(), kind: 'warn', message: `${tag}${sign.description}: switch to this wallet to sign it in Phantom` });
+      return;
+    }
+    const kind = ev.kind === 'error' ? 'error' : ev.kind === 'warn' || ev.kind === 'liquidated' || ev.kind === 'stop_hit' ? 'warn' : 'info';
+    this.broadcast({ type: 'event', t: Date.now(), kind, message: `${tag}${ev.message}` });
+    this.broadcastStatus(true);
+  }
+
+  /** Update 22: the engine for a wallet address, created on first use and kept in step with the session. */
+  private liveFor(address: string): LiveEngine {
+    let e = this.lives.get(address);
+    if (!e) {
+      e = this.live.wallet ? new LiveEngine() : this.live;
+      e.market = this.market;
+      e.solPrice = this.live.solPrice;
+      e.markPrice = this.live.markPrice;
+      e.slippageBps = this.settings.maxSlippageBps;
+      this.lives.set(address, e);
+    }
+    return e;
+  }
+
+  private allLives(): LiveEngine[] {
+    const set = new Set(this.lives.values());
+    set.add(this.live);
+    return [...set];
+  }
+
+  private walletSummaries(): StatusMsg['wallets'] {
+    return this.allLives().filter((e) => !!e.wallet).map((e) => ({
+      address: e.wallet!, signer: e.signer, active: e === this.live, driving: e === this.engine,
+      solBalance: e.solBalance, usdcBalance: e.usdcBalance,
+      position: e.position ? { market: e.position.market, side: e.position.side, leverage: e.position.leverage, sizeUsd: e.position.sizeUsd, liq: e.position.liq, pubkey: e.position.pubkey ?? null } : null,
+    }));
+  }
+
   /** Instant signing: when the trading wallet is the signer, sign and hand to Jupiter here instead of asking the browser. */
   private async autoSign(res: PedalResult): Promise<PedalResult> {
     if (!res.sign || !this.live.canAutoSign()) return res;
@@ -819,19 +898,46 @@ export class Session extends EventEmitter {
         }
         case 'use': {
           if (!this.trading.address) return { ok: false, message: 'Create the trading wallet first.' };
-          if (this.engine.kind === 'live' && this.engine.position && this.live.signer !== 'key') return { ok: false, message: 'Close the Phantom position first; the trading wallet holds its own positions.' };
-          await this.live.useTradingWallet(this.trading);
+          const te = this.liveFor(this.trading.address);
+          this.live = te;
+          if (te.signer !== 'key' || te.wallet !== this.trading.address) await te.useTradingWallet(this.trading);
           if (this.live.position && this.live.position.market !== this.market) await this.setMarket(this.live.position.market, true);
           if (this.engine.kind !== 'live' && !this.paper.position) this.setEngine('live');
           this.broadcastStatus(true);
           return { ok: true, message: 'Instant signing on: the trading wallet signs every action. No approve screens.' };
         }
         case 'phantom': {
-          this.live.usePhantom();
-          this.live.disconnect();
-          if (this.engine.kind === 'live' && !this.live.position) this.setEngine('paper');
+          // Update 22: the trading wallet keeps its engine (and its position); the Phantom wallet becomes the active one
+          const ph = this.allLives().find((e) => e.signer === 'phantom' && e.wallet);
+          if (ph) {
+            this.live = ph;
+            if (ph.position && this.engine.kind !== 'live' && !this.paper.position) this.setEngine('live');
+          } else {
+            const empty = new LiveEngine();
+            empty.market = this.market; empty.solPrice = this.live.solPrice; empty.markPrice = this.live.markPrice; empty.slippageBps = this.settings.maxSlippageBps;
+            this.live = empty;
+            if (this.engine.kind === 'live' && !this.engine.position) this.setEngine('paper');
+          }
           this.broadcastStatus(true);
-          return { ok: true, message: 'Back to Phantom: connect it from the panel.' };
+          return { ok: true, message: ph ? `Back to Phantom ${ph.wallet!.slice(0, 4)}…; the trading wallet keeps running in the background.` : 'Back to Phantom: connect it from the panel. The trading wallet keeps running in the background.' };
+        }
+        case 'activate': {
+          // Update 22: make a wallet the active one; if it holds a position, put it on the road
+          const e = opts.to ? this.lives.get(opts.to) : undefined;
+          if (!e || !e.wallet) return { ok: false, message: 'That wallet is not connected.' };
+          this.live = e;
+          const short = `${e.signer === 'key' ? 'trading wallet' : 'Phantom'} ${e.wallet.slice(0, 4)}…`;
+          if (e.position) {
+            if (e.position.market !== this.market) await this.setMarket(e.position.market, true);
+            if (this.paper.position && this.engine.kind === 'paper') return { ok: false, message: 'Close the practice position first.' };
+            this.engine = e;
+            this.mode.live = true;
+            this.liquidated = false;
+            this.broadcastStatus(true);
+            return { ok: true, message: `Driving ${short}: ${e.position.market} ${e.position.side === 1 ? 'LONG' : 'SHORT'} ${e.position.leverage.toFixed(1)}x` };
+          }
+          this.broadcastStatus(true);
+          return { ok: true, message: `${short} selected: Go opens there.` };
         }
         case 'fund-tx': {
           if (!opts.from || !(opts.amountSol !== undefined && opts.amountSol > 0)) return { ok: false, message: 'Amount and source wallet required.' };
@@ -890,7 +996,9 @@ export class Session extends EventEmitter {
 
   async liveConnect(wallet: string): Promise<{ ok: boolean; message: string }> {
     try {
-      await this.live.connect(wallet);
+      const e = this.liveFor(wallet);
+      this.live = e;
+      if (e.wallet !== wallet) await e.connect(wallet);
       if (this.live.position && this.live.position.market !== this.market) await this.setMarket(this.live.position.market, true);
       // an open position in the wallet means REAL, whatever the toggle said: always check on connect
       if (this.live.position && this.engine.kind !== 'live' && !this.paper.position) {
@@ -906,7 +1014,15 @@ export class Session extends EventEmitter {
   }
 
   liveDisconnect(): void {
-    this.live.disconnect();
+    const e = this.live;
+    const addr = e.wallet;
+    e.disconnect();
+    if (addr) this.lives.delete(addr);
+    if (this.engine === e) { this.engine = this.paper; this.mode.live = false; }
+    // Update 22: fall back to another connected wallet, else a fresh empty engine
+    const next = this.allLives().find((x) => x !== e && x.wallet);
+    if (next) this.live = next;
+    else { const empty = new LiveEngine(); empty.market = this.market; empty.solPrice = e.solPrice; empty.markPrice = e.markPrice; empty.slippageBps = this.settings.maxSlippageBps; this.live = empty; }
     this.broadcastStatus(true);
   }
 
@@ -934,7 +1050,7 @@ export class Session extends EventEmitter {
     this.layers.stop();
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.solPriceTimer) clearInterval(this.solPriceTimer);
-    this.live.disconnect();
+    for (const e of this.allLives()) e.disconnect();
     log.info('session', 'shutdown');
   }
 }

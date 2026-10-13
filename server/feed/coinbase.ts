@@ -58,12 +58,16 @@ export class CoinbaseSource extends PriceSource {
       if (!Number.isFinite(price) || price <= 0) return;
       const bid = Number(msg.best_bid);
       const ask = Number(msg.best_ask);
+      const size = Number(msg.last_size);
       this.pushTick({
         t: Date.now(),
         price,
         bid: Number.isFinite(bid) ? bid : undefined,
         ask: Number.isFinite(ask) ? ask : undefined,
         source: this.name,
+        // Update 20: the taker side and the size of this print feed the crowd
+        side: msg.side === 'buy' || msg.side === 'sell' ? msg.side : undefined,
+        size: Number.isFinite(size) && size > 0 ? size : undefined,
       });
     });
     const retry = () => {

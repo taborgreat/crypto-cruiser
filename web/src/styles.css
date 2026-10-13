@@ -113,7 +113,7 @@ a { color: var(--accent); }
 .mirror .m-title { font-size: var(--fs-label); letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
 .mirror .m-row { display: flex; justify-content: space-between; gap: 8px; font-family: var(--mono); font-variant-numeric: tabular-nums; margin: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mirror .m-row span:first-child { color: var(--muted); }
-.mirror canvas { width: 100%; height: 112px; display: block; margin-top: 6px; border-radius: 6px; background: rgba(0,0,0,0.35); cursor: crosshair; }
+.mirror canvas { width: 100%; height: 96px; display: block; margin-top: 6px; border-radius: 6px; background: rgba(0,0,0,0.35); cursor: crosshair; }
 
 /* top-down scale bar (Update 8) */
 .scalebar { position: absolute; right: 12px; bottom: calc(var(--hud-bottom-h, 0px) + 12px); padding: 6px 10px; font: 11px var(--mono); color: var(--fg); font-variant-numeric: tabular-nums; }
@@ -157,8 +157,24 @@ a { color: var(--accent); }
 .readout .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; margin: 4px 0 2px; }
 .readout .bar > div { height: 100%; background: linear-gradient(90deg, var(--orange), var(--green)); transition: width 0.3s; }
 
-.pedals { height: 40px; display: flex; justify-content: center; align-items: center; gap: 8px; }
-.pedal { font-family: var(--mono); font-size: 12px; padding: 5px 10px; border-radius: 8px; color: var(--muted); transition: transform 0.08s, background 0.08s; pointer-events: auto; cursor: pointer; white-space: nowrap; }
+.pedals { min-height: 40px; display: flex; justify-content: center; align-items: stretch; gap: 8px; flex-wrap: wrap; }
+/* Update 21: pedals that say what they do; the exit in red */
+.pedal { font-family: var(--mono); font-size: 12.5px; padding: 6px 12px; border-radius: 10px; color: var(--fg); transition: transform 0.08s, background 0.08s; pointer-events: auto; cursor: pointer; white-space: nowrap; display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 118px; border: 1px solid var(--panel-border); background: rgba(255,255,255,0.04); }
+.pedal .pk { font-weight: 800; letter-spacing: 0.06em; }
+.pedal small { font-size: 10px; color: var(--muted); letter-spacing: 0; }
+.pedal.add { border-color: rgba(53,208,127,0.6); }
+.pedal.add .pk { color: var(--green); }
+.pedal.close { border-color: rgba(255,59,59,0.65); }
+.pedal.close .pk { color: var(--red); }
+.pedal.sellall { border-color: var(--red); background: rgba(255,59,59,0.16); box-shadow: 0 0 16px rgba(255,59,59,0.3); }
+.pedal.sellall .pk { color: #fff; }
+.pedal.sellall small { color: #ffb3b3; }
+.pedal.danger { border-color: rgba(255,138,61,0.7); }
+.pedal.danger .pk { color: var(--orange); }
+.pedal.cruise { border-color: rgba(76,155,255,0.6); }
+.pedal.cruise .pk { color: var(--blue); }
+.m-grip { height: 6px; margin-top: 4px; border-radius: 3px; cursor: ns-resize; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent); pointer-events: auto; }
+@media (min-width: 1500px) { .hud-right { width: 390px; } .hud-right .mirror, .hud-right .headway .hw-sub, .hud-right .mirror .m-row { font-size: 12.5px; } .hud-right .headway .hw-caption, .hud-right .mirror .m-title { font-size: 11px; } }
 .pedal kbd { color: var(--fg); background: rgba(255,255,255,0.1); padding: 1px 6px; border-radius: 4px; margin-right: 6px; }
 .pedal.flash { background: var(--accent); color: #06111c; transform: scale(1.08); }
 .pedal.flash kbd { color: #06111c; background: rgba(0,0,0,0.15); }
@@ -348,6 +364,15 @@ a { color: var(--accent); }
 #start .msg { min-height: 14px; font-size: 12px; color: var(--yellow); font-family: var(--mono); }
 #start .warn-box { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--live); color: #ffc9c9; font-size: 12px; background: rgba(255, 45, 45, 0.08); }
 #start .wallet-box { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-family: var(--mono); font-size: 12px; }
+/* Update 22: one row per connected wallet */
+.wallet-rows { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.wrow { display: flex; gap: 8px; align-items: center; font: 11px var(--mono); padding: 4px 8px; border: 1px solid var(--panel-border); border-radius: 8px; }
+.wrow .who { flex: 0 0 auto; color: var(--fg); }
+.wrow .pos { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wrow.active { border-color: var(--accent); }
+.wrow.driving { border-color: var(--live); background: rgba(255,45,45,0.08); }
+.wrow .tag { font-size: 10px; letter-spacing: 0.12em; color: var(--muted); }
+.wrow .tag.driving { color: var(--live); font-weight: 700; }
 #start .foot { display: flex; gap: 10px; justify-content: space-between; align-items: center; color: var(--muted); font-size: 11px; }
 
 /* ---------------- panels ---------------- */
@@ -456,8 +481,8 @@ a { color: var(--accent); }
 }
 
 /* ---------------- the live price, always obvious ---------------- */
-.pricepod { position: absolute; top: 46px; left: 50%; transform: translateX(-50%); padding: 4px 18px 6px; text-align: center; z-index: 2; pointer-events: none; border-color: rgba(255,255,255,0.35); min-width: 200px; }
-.pricepod .pp-main { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 36px; line-height: 1.1; font-weight: 800; color: var(--c-neutral); letter-spacing: 0.01em; }
+.pricepod { position: absolute; top: 42px; left: 50%; transform: translateX(-50%); padding: 2px 12px 3px; text-align: center; z-index: 2; pointer-events: none; border-color: rgba(255,255,255,0.25); min-width: 0; }
+.pricepod .pp-main { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 22px; /* Update 21: the cars are the focus, not the number */ line-height: 1.1; font-weight: 800; color: var(--c-neutral); letter-spacing: 0.01em; }
 .pricepod .pp-dir { font-size: 16px; margin-left: 8px; vertical-align: middle; color: var(--muted); }
 .pricepod .pp-dir.up { color: var(--green); }
 .pricepod .pp-dir.down { color: var(--red); }
@@ -465,14 +490,14 @@ a { color: var(--accent); }
 .pricepod.down .pp-main { animation: priceDown 0.7s ease-out; }
 .pricepod .pp-sub { font: 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-top: 1px; white-space: nowrap; }
 #hud.pod-bottom .pricepod { top: auto; bottom: calc(var(--hud-bottom-h, 0px) + 10px); padding: 6px 22px 8px; }
-#hud.pod-bottom .pricepod .pp-main { font-size: 44px; }
+#hud.pod-bottom .pricepod .pp-main { font-size: 26px; }
 #labels .label.price { font-size: 15px; font-weight: 800; color: var(--c-neutral); border-color: rgba(255,255,255,0.7); background: rgba(0,0,0,0.85); margin: -38px 0 0 -40px; padding: 2px 8px; }
 @keyframes priceUp { from { color: var(--green); text-shadow: 0 0 14px rgba(53,208,127,0.9); } to { color: var(--c-neutral); text-shadow: none; } }
 @keyframes priceDown { from { color: var(--red); text-shadow: 0 0 14px rgba(255,59,59,0.9); } to { color: var(--c-neutral); text-shadow: none; } }
 
 /* top-down: the price pod moves to the corner so it never covers the lane cars; the chart info lives in the head row */
 #hud.pod-corner .pricepod { top: auto; left: 12px; transform: none; bottom: calc(var(--hud-bottom-h, 0px) + 10px); text-align: left; min-width: 0; }
-#hud.pod-corner .pricepod .pp-main { font-size: 32px; }
+#hud.pod-corner .pricepod .pp-main { font-size: 22px; }
 #hud.pod-corner .dash-numbers { bottom: calc(var(--hud-bottom-h, 0px) + 96px); }
 .chart-head .chart-info { flex: 1; min-width: 0; text-align: right; border: 0; padding: 0 4px; }
 
@@ -482,6 +507,8 @@ a { color: var(--accent); }
 .chip.price { font-weight: 800; font-size: 14px; color: var(--c-neutral); }
 #hud.pod-corner .pricepod { display: none; }
 #labels .label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+/* Update 21: side mode: the −40 px centring margin was pushing the first 40 px off the left edge */
+#labels.side .label { margin: -8px 0 0 0 !important; max-width: none !important; }
 #labels .label.liqtag { margin: -8px 0 0 0; font-size: 11px; background: rgba(0,0,0,0.85); }
 #labels .label.liqtag.long { border-color: var(--long); color: var(--long); }
 #labels .label.liqtag.short { border-color: var(--short); color: var(--short); }

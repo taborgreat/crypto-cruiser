@@ -296,7 +296,7 @@ export class Render2D implements Renderer {
     }
 
     // ---- LIVE / driver seat ----
-    const want = trafficCount(f, o.view);
+    const want = o.traffic ? trafficCount(f, o.view) : 0;
     while (this.traffic.length < want) {
       const i = this.traffic.length;
       this.traffic.push({ lane: i % 2 === 0 ? 0 : 2, y: hash01(i, 7) * h, speed: 0.8 + hash01(i, 9) * 0.4, color: ['#5e4c85', '#2c6a7a', '#6c3f86', '#7a6a2c'][i % 4] });

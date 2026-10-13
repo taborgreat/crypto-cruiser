@@ -6,7 +6,7 @@ export interface AnimTick { t: number; price: number; v: number }
 export type HoverKind = 'you' | 'ahead' | 'entry' | 'stop' | 'ghost' | 'ghost-ahead' | 'road' | 'traffic' | 'pole' | 'hill' | 'fog' | 'flag' | 'crash' | 'limit' | 'text' | 'exit';
 
 /** Something under the pointer (Update 5). `id` is the ghost id for ghost kinds, the flag/crash index otherwise. */
-export interface HoverHit { kind: HoverKind; id?: string; x: number; y: number }
+export interface HoverHit { kind: HoverKind; id?: string; x: number; y: number; text?: string }
 
 /** Screen position of a labelled object. With `text` the renderer dictates the label (Update 8 top-down). */
 export interface LabelAnchor { id: string; kind: HoverKind; x: number; y: number; visible: boolean; text?: string; cls?: string; align?: 'left' | 'right' | 'center' }
@@ -34,6 +34,8 @@ export interface RenderOpts {
   visible: Set<string>;   // Update 14: the lane ids to draw (focused + picked, or all)
   chase: boolean;         // Update 16: CHASE mode: the car in front is drawn as the monster behind you
   poles: boolean;         // Update 19: draw the roadside poles
+  crowd: boolean;         // Update 20: the other cars change lanes on real trades; the road gains a lane each side
+  traffic: boolean;       // Update 21: draw the other cars at all
   jolt: number;           // 0..1, decays after a fill with slippage
   effects: number;        // 0..1 intensity of FOV / pitch / shake / streaks (Update 3)
   anim: AnimTick | null;  // latest animation tick (CEX trade, offset-corrected), newer than the frame

@@ -164,7 +164,7 @@ export class FeedManager extends EventEmitter {
 
     // --- animation stream (Update 3)
     if (src.name === this.fastName && !fastIsTruth) {
-      const anim: Tick = { t: t.t, price: t.price + (this.offsetReady ? this.offset : 0), source: this.fastName };
+      const anim: Tick = { t: t.t, price: t.price + (this.offsetReady ? this.offset : 0), source: this.fastName, side: t.side, size: t.size };
       this.lastAnim = anim;
       this.emit('anim', anim);
     }

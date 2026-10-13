@@ -118,6 +118,7 @@ export function tooltipLines(hit: HoverHit, ctx: HoverCtx): string[] {
       return [`spread ${L.spread === null ? 'n/a' : `${(L.spread * 1e4).toFixed(1)} bp`}${car && L.spread !== null ? ` · est. slippage ${fmtUsd(car.size_usd * L.spread)} on close` : ''}`, `oracle vs feed ${L.divergence === null ? 'n/a' : `${(L.divergence * 1e4).toFixed(1)} bp`}`, tTruth];
     }
     case 'traffic': {
+      if (hit.text) return [hit.text, 'a real trade on the tape · buys drift right, sells left · big prints cut in', tTruth];
       const L = f.layers;
       return [`volatility: ATR ${L.atr === null ? '—' : fmtPct(L.atr * 100)} (1 m) · ${L.atr5m === null ? '—' : fmtPct(L.atr5m * 100)} (5 m)`, `traffic density follows the 1 m ATR`, tTruth];
     }
@@ -159,7 +160,7 @@ export function labelText(anchor: LabelAnchor, ctx: HoverCtx): string {
     case 'you': return `you ${fmtPrice(f.price, dp)}`;
     case 'ahead': return f.car ? `liq ${fmtPrice(f.car.liq, dp)} · ${fmtHeadway(f.car.headway_s)}` : fc ? `liq ${fmtPrice(fc.car.liq, dp)}` : 'liq';
     case 'ghost-ahead': return ghost ? `liq ${fmtPrice(ghost.liq, dp)} · ${fmtHeadway(ghost.headway_s)}` : 'liq';
-    case 'entry': return f.car ? `entry ${fmtPrice(f.car.entry, dp)} · ${f.car.side * (f.price - f.car.entry) >= 0 ? 'behind you (profit)' : 'ahead of you (loss)'}` : 'entry';
+    case 'entry': return f.car ? `entry ${fmtPrice(f.car.entry, dp)} · ${f.car.side * (f.price - f.car.entry) >= 0 ? 'behind you' : 'ahead of you'}` : 'entry';
     case 'stop': return f.car?.stop_price ? `stop ${fmtPrice(f.car.stop_price, dp)}` : 'stop';
     case 'ghost': return ghost ? `${ghost.label}: ${fmtSignedUsd(ghost.pnl_usd - ghost.fees_usd)}` : 'lane';
     case 'limit': return ghost?.proposed_entry ? `limit ${fmtPrice(ghost.proposed_entry, dp)}` : 'limit';

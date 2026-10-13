@@ -70,6 +70,7 @@ export class GhostPanel {
           <span id="walletInfo">not connected</span>
           <button id="btnDisconnect" class="tiny" hidden>disconnect</button>
           <button id="btnCheckPos" class="tiny" hidden title="ask Jupiter for this wallet's open positions">check positions</button>
+          <div id="walletRows" class="wallet-rows"></div>
         </div>
         <details class="trading-box" id="tradingBox">
           <summary>Instant signing · trading wallet <span class="muted" id="twState">off</span></summary>
@@ -182,7 +183,7 @@ export class GhostPanel {
         </div>
         <div class="foot"><span>V top-down / drive · K chase · H help · B chart · I inspect</span><span><button id="btnSettings" class="tiny">settings</button></span></div>
       </div>`;
-    for (const id of ['btnLive', 'ticket', 'ticketSide', 'walletBox', 'btnConnect', 'walletInfo', 'btnDisconnect', 'btnCheckPos', 'tradingBox', 'twState', 'twInfo', 'twCreate', 'twUse', 'twPhantom', 'twFundRow', 'twAmount', 'twFund', 'twWithdraw', 'twSwap', 'pgTrades', 'pgCond', 'onlyMine', 'resumeRow', 'btnResume', 'segSide', 'segMarket', 'sPrice', 'sFeed', 'balance', 'btnMax', 'payPct', 'payChips', 'payMax', 'amount', 'segToken', 'amountUsd', 'bankrollEdit', 'bankroll', 'sizeTok', 'sizeUsd',
+    for (const id of ['btnLive', 'ticket', 'ticketSide', 'walletBox', 'btnConnect', 'walletInfo', 'btnDisconnect', 'btnCheckPos', 'walletRows', 'tradingBox', 'twState', 'twInfo', 'twCreate', 'twUse', 'twPhantom', 'twFundRow', 'twAmount', 'twFund', 'twWithdraw', 'twSwap', 'pgTrades', 'pgCond', 'onlyMine', 'resumeRow', 'btnResume', 'segSide', 'segMarket', 'sPrice', 'sFeed', 'balance', 'btnMax', 'payPct', 'payChips', 'payMax', 'amount', 'segToken', 'amountUsd', 'bankrollEdit', 'bankroll', 'sizeTok', 'sizeUsd',
       'levLabel', 'levRange', 'levNum', 'levPresets', 'hLabel', 'hChips', 'hSlider', 'hAutoRoom', 'hAutoVol', 'hEff',
       'sumEntry', 'sumLiq', 'sumGap', 'sumFee', 'sumBorrow', 'sumCol', 'btnMarketEntry', 'limitPrice', 'btnNudgeBack', 'btnNudgeFwd', 'limitHint', 'bothSides', 'showAll', 'lanes', 'readout', 'conditions', 'msg', 'btnGo', 'goHint',
       'orderRow', 'orderText', 'btnCancelOrder', 'btnRewind', 'tradesWhere', 'trades', 'liveWarn', 'btnSettings']) {
@@ -503,6 +504,30 @@ export class GhostPanel {
     this.tradesAt = 0;
   }
 
+  /** Update 22: one row per connected wallet: its position, and RESUME / use. */
+  private lastWalletsKey = '';
+  private renderWallets(ws: UIState['status'] extends infer S ? (S extends { wallets: infer W } ? W : never) : never): void {
+    const key = JSON.stringify(ws.map((w) => [w.address, w.active, w.driving, w.position?.sizeUsd ?? 0, w.position?.liq ?? 0]));
+    if (key === this.lastWalletsKey) return;
+    this.lastWalletsKey = key;
+    const box = this.$.walletRows;
+    box.hidden = ws.length === 0;
+    box.innerHTML = ws.map((w) => {
+      const who = `${w.signer === 'key' ? 'trading wallet' : 'Phantom'} ${shortAddr(w.address)}`;
+      const dp = w.position ? MARKETS[w.position.market].priceDp : 3;
+      const pos = w.position ? `<b class="${w.position.side === 1 ? 'long' : 'short'}">${w.position.market} ${w.position.side === 1 ? 'LONG' : 'SHORT'} ${w.position.leverage.toFixed(1)}x</b> ${fmtUsd(w.position.sizeUsd, 0)} · liq ${fmtPrice(w.position.liq, dp)}` : '<span class="muted">no position · Go opens here</span>';
+      const btn = w.driving ? '<span class="tag driving">DRIVING</span>' : w.position ? `<button class="tiny primary" data-w="${w.address}">RESUME</button>` : w.active ? '<span class="tag">selected</span>' : `<button class="tiny" data-w="${w.address}">use</button>`;
+      return `<div class="wrow${w.active ? ' active' : ''}${w.driving ? ' driving' : ''}"><span class="who">${who}</span><span class="pos">${pos}</span>${btn}</div>`;
+    }).join('');
+    box.querySelectorAll<HTMLButtonElement>('button[data-w]').forEach((b) => b.addEventListener('click', async () => {
+      try {
+        const r = await api.liveTrading({ action: 'activate', to: b.dataset.w });
+        this.msg(r.message, r.ok);
+        if (r.ok && /^Driving/.test(r.message)) this.d.onResume();
+      } catch (e) { this.msg((e as Error).message); }
+    }));
+  }
+
   private msg(text: string, good = false): void {
     this.$.msg.textContent = text;
     this.$.msg.style.color = good ? 'var(--green)' : 'var(--yellow)';
@@ -584,6 +609,12 @@ export class GhostPanel {
       (this.$.hAutoVol as HTMLInputElement).checked = hs.autoHorizonVol;
       const hz = s.frame?.horizon;
       this.$.hEff.textContent = hz ? `now ${fmtTime(hz.h)} · lanes ${hz.ghost_ages.map((a) => shortSpan(a)).join(' / ')} / now · red under ${fmtTime(hz.thr.orange)}${hz.clear ? ' · CLEAR' : ''}` : '';
+      // Update 22: the PRACTICE / REAL tabs follow the server's engine, so a resumed real position never looks like practice
+      if (st.engine !== this.mode) {
+        this.mode = st.engine;
+        this.root.querySelectorAll<HTMLButtonElement>('.mode-toggle button').forEach((b) => b.classList.toggle('active', b.dataset.mode === st.engine));
+      }
+      this.renderWallets(st.wallets ?? []);
       // Phantom (Update 11 B3): REAL stays disabled until a wallet is connected
       const w = st.wallet;
       this.walletConnected = !!w.address;
