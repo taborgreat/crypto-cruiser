@@ -65,6 +65,7 @@ interface TrafficCar {
   model: CarModel; lane: number; z: number; speed: number;
   // Update 20: a lane change in progress (signal, then a slide), cooldowns, a cut-in's road target, the big-print size
   from: number; to: number; changeStart: number; changeDur: number; signalUntil: number; nextAllowed: number; bigUntil: number; leaveAt: number; zTo: number | null; edge: number;
+  base: number; // Update 25: the car's own cruising speed (× the flow); `speed` returns to it after a trade moved it
 }
 interface CarModel { g: THREE.Group; bodyMat: THREE.MeshStandardMaterial; edgeMat: THREE.LineBasicMaterial; headMat: THREE.MeshBasicMaterial; brakes: THREE.MeshStandardMaterial; bloom: THREE.Sprite[]; glow: THREE.PointLight | null }
 interface GhostModel { car: CarModel; ahead: CarModel; monster?: CarModel; line: THREE.Mesh; entry: THREE.Mesh; trail: THREE.Line; trailGeo: THREE.BufferGeometry; aheadZ: number; carZ: number; impact: THREE.Sprite; side: Side; lane: number }
@@ -1273,7 +1274,8 @@ export class Render3D implements Renderer {
       this.scene.add(model.g);
       this.pickables.push(model.g);
       const lane = shoulders[i % shoulders.length];
-      this.traffic.push({ model, lane, z: -hash01(i, 3) * ROAD_AHEAD * 0.8 + 10, speed: 0.85 + hash01(i, 5) * 0.3, from: lane, to: lane, changeStart: 0, changeDur: 0, signalUntil: 0, nextAllowed: 0, bigUntil: 0, leaveAt: 0, zTo: null, edge });
+      const base = 0.95 + hash01(i, 5) * 0.1;
+      this.traffic.push({ model, lane, z: -hash01(i, 3) * ROAD_AHEAD * 0.8 + 10, speed: base, base, from: lane, to: lane, changeStart: 0, changeDur: 0, signalUntil: 0, nextAllowed: 0, bigUntil: 0, leaveAt: 0, zTo: null, edge });
     }
     // Update 20: the crowd is made of real trades. Each print on the fast feed may move one car: buys drift right,
     // sells left (invert flips it); the odds grow with size against the last minute's median (a median print ~3 %,
@@ -1282,39 +1284,52 @@ export class Render3D implements Renderer {
     // smooth slide; two seconds between moves per car; the whole field at most one change per two cars a second.
     const mySide = focus ? focus.side : 0;
     const dirSign = o.invert ? -1 : 1;
+    // Update 25: the crowd carries the flow in its motion relative to me. A trade WITH my side makes a car ahead back
+    // off (a huge one stops dead and I pass it); a trade AGAINST my side makes a car from behind rush past (a huge one
+    // comes through fast and cuts in ahead). Size sets how much: a median print barely, a 20× print all the way.
+    // Buys still drift right and sells left as the quieter second cue.
     if (o.crowd && !top && want > 0) {
       for (const ev of this.flowQueue.splice(0)) {
-        const p = clamp((ev.ratio - 1) / 4, 0.03, 1);
-        if (Math.random() > p) continue;
-        if (nowMs < this.nextChangeAt) continue;
-        const big = ev.ratio >= 8;
-        const dir = ev.side * dirSign;
-        const against = mySide !== 0 && ev.side * mySide < 0;
-        const free = this.traffic.filter((c, i) => i < want && nowMs >= c.nextAllowed && c.changeStart === 0);
-        if (!free.length) continue;
-        let car: TrafficCar;
-        let to: number;
-        let zTo: number | null = null;
-        if (big && mySide !== 0) {
-          car = free[Math.floor(Math.random() * free.length)];
-          to = myLane;
-          zTo = against ? -(9 + Math.random() * 4) : 7 + Math.random() * 3;
-          car.leaveAt = nowMs + 3500;
-        } else {
-          const movable = free.filter((c) => { const t = Math.round(c.lane) + dir; return t >= 0 && t < laneN2 && t !== myLane; });
-          if (!movable.length) continue;
-          car = movable[Math.floor(Math.random() * movable.length)];
-          to = Math.round(car.lane) + dir;
+        const k = clamp(Math.log2(Math.max(1, ev.ratio)) / Math.log2(20), 0, 1);
+        if (Math.random() > clamp(0.05 + k, 0.05, 1)) continue;
+        const cars = this.traffic.filter((c, i) => i < want);
+        if (!cars.length) continue;
+        const withMe = mySide !== 0 && ev.side === mySide;
+        const against = mySide !== 0 && ev.side !== mySide;
+        const text = `${ev.side === 1 ? 'buy' : 'sell'} $${Math.round(ev.sizeUsd).toLocaleString()} · ${ev.ratio.toFixed(1)}× median · ${new Date(ev.t).toLocaleTimeString()}`;
+        if (withMe) {
+          const ahead = cars.filter((c) => c.z < -8 && c.changeStart === 0);
+          const car = ahead.length ? ahead[Math.floor(Math.random() * ahead.length)] : cars[Math.floor(Math.random() * cars.length)];
+          car.speed = Math.max(0, 1 - k);
+          car.model.g.userData.text = `${text} · with you → backing off`;
+          if (k > 0.6) car.bigUntil = nowMs + 20_000;
+        } else if (against) {
+          let car = cars.find((c) => c.z > 4 && c.changeStart === 0);
+          if (!car) { car = cars[Math.floor(Math.random() * cars.length)]; car.z = 30 + Math.random() * 8; }
+          car.speed = 1 + 2.2 * k;
+          car.model.g.userData.text = `${text} · against you → rushing past`;
+          if (k > 0.6) {
+            car.bigUntil = nowMs + 20_000;
+            if (nowMs >= car.nextAllowed && nowMs >= this.nextChangeAt) {
+              car.from = Math.round(car.lane); car.to = myLane; car.signalUntil = nowMs + 500; car.changeStart = nowMs + 500; car.changeDur = 1200; car.zTo = -(9 + Math.random() * 4); car.leaveAt = nowMs + 4000; car.nextAllowed = nowMs + 3200;
+              this.nextChangeAt = nowMs + 2000 / Math.max(1, want);
+            }
+          }
         }
-        const dur = 1000 + Math.random() * 500;
-        car.from = Math.round(car.lane); car.to = to; car.signalUntil = nowMs + 500; car.changeStart = nowMs + 500; car.changeDur = dur; car.zTo = zTo;
-        car.nextAllowed = nowMs + 2000 + dur;
-        if (big) car.bigUntil = nowMs + 20_000;
-        car.model.g.userData.text = `${ev.side === 1 ? 'buy' : 'sell'} ${Math.round(ev.sizeUsd).toLocaleString()} · ${ev.ratio.toFixed(1)}× median · ${new Date(ev.t).toLocaleTimeString()}`;
-        this.nextChangeAt = nowMs + 2000 / Math.max(1, want);
+        if (Math.random() < 0.35 && nowMs >= this.nextChangeAt) {
+          const dir = ev.side * dirSign;
+          const movable = cars.filter((c) => { if (nowMs < c.nextAllowed || c.changeStart !== 0) return false; const t = Math.round(c.lane) + dir; return t >= 0 && t < laneN2 && t !== myLane; });
+          if (movable.length) {
+            const car = movable[Math.floor(Math.random() * movable.length)];
+            const dur = 1000 + Math.random() * 500;
+            car.from = Math.round(car.lane); car.to = Math.round(car.lane) + dir; car.signalUntil = nowMs + 500; car.changeStart = nowMs + 500; car.changeDur = dur; car.zTo = null; car.nextAllowed = nowMs + 2000 + dur;
+            if (!car.model.g.userData.text) car.model.g.userData.text = text;
+            this.nextChangeAt = nowMs + 2000 / Math.max(1, want);
+          }
+        }
       }
     } else this.flowQueue.length = 0;
-    const rel = (focus ? focus.v_road - focus.v_you : 0) * o.gapScale * o.speedScale * dt; // + = they pull ahead
+    const vRoadVis = Math.max(0.5, (focus ? focus.v_road : 0.05) * o.gapScale * o.speedScale); // the road's flow, visual m/s
     for (let i = 0; i < this.traffic.length; i++) {
       const c = this.traffic[i];
       c.model.g.visible = i < want;
@@ -1332,9 +1347,11 @@ export class Render3D implements Renderer {
         const dir = Math.round(c.lane) + 1 < laneN2 ? 1 : -1;
         c.from = Math.round(c.lane); c.to = Math.round(c.lane) + dir; c.signalUntil = nowMs + 400; c.changeStart = nowMs + 400; c.changeDur = 1200; c.leaveAt = 0; c.nextAllowed = nowMs + 4000;
       } else {
-        c.z -= rel * c.speed + (c.speed - 1) * 0.6 * dt * o.speedScale;
-        if (c.z < -ROAD_AHEAD * 0.9) c.z = 30;
-        if (c.z > 40) c.z = -ROAD_AHEAD * 0.85;
+        // cars ride the road at `speed` × the flow and I ride at my speed: slower cars come back to me, faster ones rush past
+        c.speed += (c.base - c.speed) * (1 - Math.exp(-dt / 12));
+        c.z += (vYouVis - c.speed * vRoadVis) * dt;
+        if (c.z < -ROAD_AHEAD * 0.9) { c.z = 30; c.speed = c.base; }
+        if (c.z > 40) { c.z = -ROAD_AHEAD * 0.85; c.speed = c.base; }
       }
       c.lane = clamp(c.lane, 0, laneN2 - 1);
       const signaling = nowMs < c.signalUntil;

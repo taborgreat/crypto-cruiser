@@ -260,14 +260,13 @@ export class BridgeChart {
 
     if (this.collapsed) { this.drawMini(frame); return; }
 
-    // markers: swings (hills), flags, rewind liquidations
+    // markers: flags and rewind liquidations (the swing high / low arrows went in Update 26: noise)
     const flags = frame.rewind ? frame.rewind.flags : status?.flags ?? [];
     const crashes = frame.rewind ? frame.rewind.crashes : [];
-    const key = `${frame.swings.map((s) => s.t).join(',')}|${flags.length}|${crashes.length}`;
+    const key = `${flags.length}|${crashes.length}`;
     if (key !== this.lastMarkersKey) {
       this.lastMarkersKey = key;
       const marks: SeriesMarker<UTCTimestamp>[] = [];
-      for (const s of frame.swings) marks.push({ time: Math.floor(s.t / 1000) as UTCTimestamp, position: s.kind === 'high' ? 'aboveBar' : 'belowBar', color: s.kind === 'high' ? '#ff8a3d' : '#2ee6ff', shape: s.kind === 'high' ? 'arrowDown' : 'arrowUp', text: s.kind === 'high' ? 'swing high' : 'swing low' });
       for (const fl of flags) marks.push({ time: Math.floor(fl.t / 1000) as UTCTimestamp, position: 'aboveBar', color: '#ffd23f', shape: 'circle', text: '⚑ flag' });
       const step = Math.max(1, Math.ceil(crashes.length / 120));
       crashes.forEach((c, i) => { if (i % step === 0) marks.push({ time: Math.floor(c[0] / 1000) as UTCTimestamp, position: 'belowBar', color: c[1] === 1 ? '#5ee0c8' : '#ff3fa4', shape: 'circle', text: `${c[1] === 1 ? 'LONG' : 'SHORT'} liq` }); });

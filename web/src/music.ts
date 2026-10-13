@@ -18,6 +18,8 @@ export class Music {
   private last: Track | null = null;
   private racing = false;
   private blocked = false;   // autoplay refused: retry on the next user gesture
+  private resumed = false;   // Update 24: the first track after a load is the one that was playing, where it was
+  private lastSave = 0;
 
   constructor(private onTrack: (t: Track) => void = () => undefined) {
     const retry = () => { if (this.blocked && this.racing) this.play(); };
@@ -39,7 +41,42 @@ export class Music {
     if (!want && el.volume <= 0.001 && !el.paused) el.pause();
   }
 
+  private save(clear = false): void {
+    const el = this.el;
+    if (!el || !this.last) return;
+    const now = Date.now();
+    if (!clear && now - this.lastSave < 2000) return;
+    this.lastSave = now;
+    try { localStorage.setItem('traffic.music', JSON.stringify({ url: this.last.url, time: clear ? 0 : el.currentTime })); } catch { /* ignore */ }
+  }
+
   private next(): void {
+    // Update 24: after a reload, carry on with the track that was playing, from where it was
+    let resume: { t: Track; at: number } | null = null;
+    if (!this.resumed) {
+      this.resumed = true;
+      try {
+        const raw = localStorage.getItem('traffic.music');
+        if (raw) {
+          const s = JSON.parse(raw) as { url: string; time: number };
+          const found = TRACKS.find((x) => x.url === s.url);
+          if (found && s.time > 2) resume = { t: found, at: s.time };
+        }
+      } catch { /* ignore */ }
+    }
+    if (resume) {
+      this.last = resume.t;
+      this.ensureEl();
+      const el = this.el!;
+      const at = resume.at;
+      const onMeta = () => { el.currentTime = Math.min(at, Math.max(0, (el.duration || at + 1) - 1)); el.removeEventListener('loadedmetadata', onMeta); };
+      el.addEventListener('loadedmetadata', onMeta);
+      el.src = resume.t.url;
+      el.volume = 0;
+      this.play();
+      this.onTrack(resume.t);
+      return;
+    }
     if (!this.bag.length) {
       this.bag = [...TRACKS];
       for (let i = this.bag.length - 1; i > 0; i--) {
@@ -51,15 +88,20 @@ export class Music {
     }
     const t = this.bag.pop()!;
     this.last = t;
-    if (!this.el) {
-      this.el = new Audio();
-      this.el.preload = 'auto';
-      this.el.addEventListener('ended', () => { if (this.racing) this.next(); });
-    }
-    this.el.src = t.url;
-    this.el.volume = 0;
+    this.ensureEl();
+    this.el!.src = t.url;
+    this.el!.volume = 0;
     this.play();
     this.onTrack(t);
+  }
+
+  private ensureEl(): void {
+    if (this.el) return;
+    this.el = new Audio();
+    this.el.preload = 'auto';
+    this.el.addEventListener('ended', () => { this.save(true); if (this.racing) this.next(); });
+    this.el.addEventListener('timeupdate', () => this.save());
+    this.el.addEventListener('pause', () => this.save());
   }
 
   private play(): void {

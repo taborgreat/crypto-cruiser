@@ -45,14 +45,16 @@ const PEDALS: Array<{ key: string; label: string; sub: string; action: PedalActi
   { key: 'X', label: 'WITHDRAW', sub: 'pull collateral · closer to it', action: 'withdraw', cls: 'danger' },
   { key: 'T', label: 'CRUISE', sub: 'trailing stop', action: 'cruise', cls: 'cruise' },
 ];
-// Update 23: in CHASE the pedals follow the picture: gas pulls away from it (closing buys room), brake lets it gain
+// Update 25: in CHASE every key does exactly what it does in TRAFFIC; only the words change, to what the action
+// does to the one behind you
+// Update 26: same keys, same positions, same colours as TRAFFIC; the verbs are the chase's: gaining distance from the cop
 const PEDALS_CHASE: typeof PEDALS = [
-  { key: 'W', label: 'PULL AWAY', sub: 'close part · the exit', action: 'brake_light', cls: 'close' },
-  { key: '⇧W / ␣', label: 'ESCAPE', sub: 'CLOSE EVERYTHING · the exit', action: 'brake_full', cls: 'sellall' },
-  { key: 'C', label: 'BACK OFF', sub: 'add collateral · more room', action: 'coast', cls: 'add' },
-  { key: 'S', label: 'LET IT GAIN', sub: 'add size · it closes in', action: 'gas_light', cls: 'add' },
-  { key: '·', label: 'HARD', sub: 'add size, no collateral', action: 'gas_hard', cls: 'danger' },
-  { key: 'X', label: 'WITHDRAW', sub: 'pull collateral · it closes in', action: 'withdraw', cls: 'danger' },
+  { key: 'W', label: 'SLOW DOWN', sub: 'add size · it gains on you', action: 'gas_light', cls: 'add' },
+  { key: '⇧W', label: 'STALL', sub: 'add size, no collateral · it gains fast', action: 'gas_hard', cls: 'danger' },
+  { key: 'C', label: 'PULL AHEAD', sub: 'add collateral · it falls back', action: 'coast', cls: 'add' },
+  { key: 'S', label: 'SPEED UP', sub: 'close part · it falls back · the exit', action: 'brake_light', cls: 'close' },
+  { key: '␣', label: 'FLOOR IT', sub: 'CLOSE EVERYTHING · you are gone', action: 'brake_full', cls: 'sellall' },
+  { key: 'X', label: 'DRAG', sub: 'pull collateral · it gains on you', action: 'withdraw', cls: 'danger' },
   { key: 'T', label: 'CRUISE', sub: 'trailing stop', action: 'cruise', cls: 'cruise' },
 ];
 

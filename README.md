@@ -558,3 +558,36 @@ size and the last hour's trade rate, and may move one car:
   fee (no Jupiter fee); it changes your room, not your exposure. Changing size costs 6 bps plus impact each
   way. Jupiter's limits: withdrawing must leave the position under 250× and above its minimum collateral;
   adding must keep it above 1.1×.
+
+## Update 24: GO is for the selected wallet; the music carries on
+
+- **GO belongs to the selected wallet.** With the trading wallet driving a position, selecting Phantom
+  (use) shows GO again; placing there puts that new position on the road. RESUME shows when the selected
+  wallet itself holds a position, and switches the road to it first if another wallet was driving. The
+  ticket header says which wallet it places on.
+- **The music resumes** the track that was playing, from where it was, after a reload; it only starts a
+  new random track when the old one ended.
+
+## Update 25: the pedals keep their keys; the crowd moves with the flow
+
+- **Every key does the same thing in both modes.** W adds size, ⇧W adds size with no collateral, C adds
+  collateral, S closes part, Space closes everything, X pulls collateral, T is the trailing stop. In CHASE
+  only the words change, to what the action does to the one behind you: GAS "it gains on you", BRAKE "it
+  falls back", BACK OFF "it falls back", WITHDRAW "it gains on you".
+- **The crowd carries the flow in its motion relative to you.** A trade with your side makes a car ahead
+  back off, and a huge one stops dead so you pass it. A trade against your side makes a car from behind
+  rush past, and a huge one comes through fast and cuts in ahead. Size sets how much: a median print
+  barely, a 20× print all the way. So, short: sells are cars backing off with you, buys are traffic coming
+  in fast; the same picture in CHASE, where what rushes past from behind is what is catching up. Buys
+  still drift right and sells left as the quieter second cue. Hover a car for the trade and its role.
+
+## Update 26
+
+- **USDC → SOL on any wallet.** Each wallet row shows "swap … USDC" when it holds at least $0.50. The
+  trading wallet signs on the server; Phantom signs in the browser, then Jupiter lands it.
+- **No swing markers** on the chart.
+- **The CONDITIONS and TRADES buttons** sit under the conditions panel.
+- **CHASE verbs.** Same keys, positions and colours as TRAFFIC; the words are the chase's: W SLOW DOWN
+  (add size, it gains on you), ⇧W STALL, C PULL AHEAD (add collateral, it falls back), S SPEED UP (close
+  part, it falls back), Space FLOOR IT (close everything, you are gone), X DRAG (pull collateral, it gains
+  on you), T CRUISE.

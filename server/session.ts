@@ -12,7 +12,7 @@ import { buildReadout } from '../shared/readout.js';
 import { agoSpan } from '../shared/format.js';
 import { previewPosition } from '../shared/preview.js';
 import { marketImpulse } from '../shared/kinematics.js';
-import { swapUsdcToSol } from './swap.js';
+import { swapExecute, swapOrder, swapUsdcToSol } from './swap.js';
 import { autoRoomTarget, autoVolMultiplier, clampH, deriveHorizon } from '../shared/horizon.js';
 import {
   MARKETS, type BehindState, type CarFrame, type ExitOrder, type Flag, type Frame, type GhostFrame, type GhostParams, type HorizonState, type Layers,
@@ -80,6 +80,8 @@ export class Session extends EventEmitter {
   private flowMinute = new Array<number>(60).fill(0);
   private flowMinuteIdx = -1;
   private flowPending: FlowEvent[] = [];
+  /** Update 26: a Phantom swap waiting for its signature. */
+  private pendingSwap: { requestId: string; amount: number; outAmount: number; wallet: string } | null = null;
   // horizon
   private hEff: number;
   private gapAtEntry: { key: string; gap: number } | null = null;
@@ -790,6 +792,8 @@ export class Session extends EventEmitter {
     const lt = this.feed.lastTick;
     this.live.slippageBps = this.settings.maxSlippageBps;
     const res = await this.autoSign(await this.live.open(params, lt?.price ?? 0));
+    // Update 24: the wallet that just placed goes on the road, even if another wallet was driving
+    if (res.ok && this.engine !== this.live) { this.engine = this.live; this.mode.live = true; this.liquidated = false; }
     this.broadcastStatus(true);
     return res;
   }
@@ -888,7 +892,7 @@ export class Session extends EventEmitter {
   }
 
   /** Update 13: the trading wallet: create / use (instant signing) / back to Phantom / fund / withdraw. */
-  async tradingAction(action: string, opts: { to?: string; from?: string; amountSol?: number }): Promise<{ ok: boolean; message: string; txB64?: string; txid?: string; address?: string }> {
+  async tradingAction(action: string, opts: { to?: string; from?: string; amountSol?: number; signedTxB64?: string; requestId?: string }): Promise<{ ok: boolean; message: string; txB64?: string; txid?: string; address?: string; requestId?: string }> {
     try {
       switch (action) {
         case 'create': {
@@ -951,13 +955,30 @@ export class Session extends EventEmitter {
           return { ok: true, message: `Sent ${r.sol.toFixed(4)} SOL back to Phantom (tx ${r.txid.slice(0, 8)}…)`, txid: r.txid };
         }
         case 'swap-usdc': {
-          // Update 14: closed shorts leave USDC in the trading wallet; swap it back to SOL on Jupiter
-          if (this.live.signer !== 'key' || !this.trading.keypair) return { ok: false, message: 'Swapping needs the trading wallet (instant signing). With Phantom, swap on jup.ag.' };
-          await this.live.refreshBalance();
-          const usdc = this.live.usdcBalance ?? 0;
-          if (usdc < 0.01) return { ok: false, message: 'No USDC in the trading wallet.' };
-          const r = await swapUsdcToSol(this.trading, usdc);
-          await this.live.refreshBalance();
+          // closed shorts leave USDC behind; swap it back to SOL on Jupiter. Update 26: any wallet: the trading wallet
+          // signs here, Phantom signs in the browser and 'swap-execute' lands it
+          const e = (opts.to && this.lives.get(opts.to)) || this.live;
+          if (!e.wallet) return { ok: false, message: 'Connect a wallet first.' };
+          await e.refreshBalance();
+          const usdc = e.usdcBalance ?? 0;
+          if (usdc < 0.01) return { ok: false, message: 'No USDC in this wallet.' };
+          if (e.signer === 'key' && this.trading.keypair && e.wallet === this.trading.address) {
+            const r = await swapUsdcToSol(this.trading, usdc);
+            await e.refreshBalance();
+            this.broadcastStatus(true);
+            return { ok: true, message: `Swapped ${r.inUsdc.toFixed(2)} USDC → ${r.outSol.toFixed(4)} SOL${r.txid ? ` (tx ${r.txid.slice(0, 8)}…)` : ''}`, txid: r.txid };
+          }
+          const o = await swapOrder(e.wallet, usdc);
+          this.pendingSwap = { requestId: o.requestId, amount: o.amount, outAmount: o.outAmount, wallet: e.wallet };
+          return { ok: true, message: `Sign the swap of ${usdc.toFixed(2)} USDC → SOL in Phantom.`, txB64: o.transaction, requestId: o.requestId };
+        }
+        case 'swap-execute': {
+          const ps = this.pendingSwap;
+          if (!opts.signedTxB64 || !opts.requestId || !ps || ps.requestId !== opts.requestId) return { ok: false, message: 'No swap waiting for that signature.' };
+          const r = await swapExecute(opts.signedTxB64, opts.requestId, ps);
+          this.pendingSwap = null;
+          const e = this.lives.get(ps.wallet);
+          if (e) await e.refreshBalance();
           this.broadcastStatus(true);
           return { ok: true, message: `Swapped ${r.inUsdc.toFixed(2)} USDC → ${r.outSol.toFixed(4)} SOL${r.txid ? ` (tx ${r.txid.slice(0, 8)}…)` : ''}`, txid: r.txid };
         }

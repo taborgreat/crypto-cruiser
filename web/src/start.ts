@@ -11,7 +11,7 @@ import { api } from './api.js';
 import { ConditionsPanel } from './conditions.js';
 import { clockTime, fmtHeadway, fmtPct, fmtPrice, fmtSignedUsd, fmtSol, fmtTime, fmtUsd, shortAddr, shortSpan } from './format.js';
 import { focusCar, type Store, type UIState } from './state.js';
-import { SOL_FEE_RESERVE_UI, connectPhantom, disconnectPhantom, hasPhantom, signAndSendB64 } from './wallet.js';
+import { SOL_FEE_RESERVE_UI, connectPhantom, disconnectPhantom, hasPhantom, signAndSendB64, signTransactionB64 } from './wallet.js';
 
 export interface GhostPanelDeps {
   store: Store;
@@ -90,7 +90,7 @@ export class GhostPanel {
         </details>
         <div id="resumeRow" hidden><button class="primary wide" id="btnResume">RESUME</button></div>
         <section class="ticket short" id="ticket">
-          <div class="ticket-head"><span>PLACE A POSITION</span><span id="ticketSide" class="short">SHORT ▼</span></div>
+          <div class="ticket-head"><span>PLACE A POSITION <span id="ticketWallet" class="muted"></span></span><span id="ticketSide" class="short">SHORT ▼</span></div>
         <div class="side-tabs" id="segSide">
           <button data-v="1" class="long">Long</button>
           <button data-v="-1" class="short active">Short</button>
@@ -164,12 +164,12 @@ export class GhostPanel {
 
         <div class="readout-line" id="readout">set side, leverage and size — the lanes drive it live</div>
 
+        <div class="conditions" id="conditions"></div>
         <div class="page-buttons">
           <button id="pgCond" title="the seven horizons in full, with the watcher's guide">CONDITIONS<small>the read · signals · risk at your leverage</small></button>
           <button id="pgTrades" title="every trade of a wallet, with charts">TRADES<small>every trade · charts · win rate</small></button>
         </div>
 
-        <div class="conditions" id="conditions"></div>
         <button class="wide rewind-btn" id="btnRewind" title="R">REWIND · drive the past with this position</button>
 
         <details class="trades-box">
@@ -183,7 +183,7 @@ export class GhostPanel {
         </div>
         <div class="foot"><span>V top-down / drive · K chase · H help · B chart · I inspect</span><span><button id="btnSettings" class="tiny">settings</button></span></div>
       </div>`;
-    for (const id of ['btnLive', 'ticket', 'ticketSide', 'walletBox', 'btnConnect', 'walletInfo', 'btnDisconnect', 'btnCheckPos', 'walletRows', 'tradingBox', 'twState', 'twInfo', 'twCreate', 'twUse', 'twPhantom', 'twFundRow', 'twAmount', 'twFund', 'twWithdraw', 'twSwap', 'pgTrades', 'pgCond', 'onlyMine', 'resumeRow', 'btnResume', 'segSide', 'segMarket', 'sPrice', 'sFeed', 'balance', 'btnMax', 'payPct', 'payChips', 'payMax', 'amount', 'segToken', 'amountUsd', 'bankrollEdit', 'bankroll', 'sizeTok', 'sizeUsd',
+    for (const id of ['btnLive', 'ticket', 'ticketSide', 'ticketWallet', 'walletBox', 'btnConnect', 'walletInfo', 'btnDisconnect', 'btnCheckPos', 'walletRows', 'tradingBox', 'twState', 'twInfo', 'twCreate', 'twUse', 'twPhantom', 'twFundRow', 'twAmount', 'twFund', 'twWithdraw', 'twSwap', 'pgTrades', 'pgCond', 'onlyMine', 'resumeRow', 'btnResume', 'segSide', 'segMarket', 'sPrice', 'sFeed', 'balance', 'btnMax', 'payPct', 'payChips', 'payMax', 'amount', 'segToken', 'amountUsd', 'bankrollEdit', 'bankroll', 'sizeTok', 'sizeUsd',
       'levLabel', 'levRange', 'levNum', 'levPresets', 'hLabel', 'hChips', 'hSlider', 'hAutoRoom', 'hAutoVol', 'hEff',
       'sumEntry', 'sumLiq', 'sumGap', 'sumFee', 'sumBorrow', 'sumCol', 'btnMarketEntry', 'limitPrice', 'btnNudgeBack', 'btnNudgeFwd', 'limitHint', 'bothSides', 'showAll', 'lanes', 'readout', 'conditions', 'msg', 'btnGo', 'goHint',
       'orderRow', 'orderText', 'btnCancelOrder', 'btnRewind', 'tradesWhere', 'trades', 'liveWarn', 'btnSettings']) {
@@ -224,7 +224,7 @@ export class GhostPanel {
     this.$.pgTrades.addEventListener('click', () => this.d.onPage('trades'));
     this.$.pgCond.addEventListener('click', () => this.d.onPage('conditions'));
     this.$.btnGo.addEventListener('click', () => void this.go());
-    this.$.btnResume.addEventListener('click', () => this.d.onResume());
+    this.$.btnResume.addEventListener('click', () => void this.resume());
     this.$.btnCancelOrder.addEventListener('click', () => this.d.onCancelOrder());
     this.$.btnRewind.addEventListener('click', () => this.d.onRewind());
     this.$.btnSettings.addEventListener('click', () => this.d.onSettings());
@@ -507,7 +507,7 @@ export class GhostPanel {
   /** Update 22: one row per connected wallet: its position, and RESUME / use. */
   private lastWalletsKey = '';
   private renderWallets(ws: UIState['status'] extends infer S ? (S extends { wallets: infer W } ? W : never) : never): void {
-    const key = JSON.stringify(ws.map((w) => [w.address, w.active, w.driving, w.position?.sizeUsd ?? 0, w.position?.liq ?? 0]));
+    const key = JSON.stringify(ws.map((w) => [w.address, w.active, w.driving, w.position?.sizeUsd ?? 0, w.position?.liq ?? 0, Math.round((w.usdcBalance ?? 0) * 10)]));
     if (key === this.lastWalletsKey) return;
     this.lastWalletsKey = key;
     const box = this.$.walletRows;
@@ -517,8 +517,10 @@ export class GhostPanel {
       const dp = w.position ? MARKETS[w.position.market].priceDp : 3;
       const pos = w.position ? `<b class="${w.position.side === 1 ? 'long' : 'short'}">${w.position.market} ${w.position.side === 1 ? 'LONG' : 'SHORT'} ${w.position.leverage.toFixed(1)}x</b> ${fmtUsd(w.position.sizeUsd, 0)} · liq ${fmtPrice(w.position.liq, dp)}` : '<span class="muted">no position · Go opens here</span>';
       const btn = w.driving ? '<span class="tag driving">DRIVING</span>' : w.position ? `<button class="tiny primary" data-w="${w.address}">RESUME</button>` : w.active ? '<span class="tag">selected</span>' : `<button class="tiny" data-w="${w.address}">use</button>`;
-      return `<div class="wrow${w.active ? ' active' : ''}${w.driving ? ' driving' : ''}"><span class="who">${who}</span><span class="pos">${pos}</span>${btn}</div>`;
+      const swap = (w.usdcBalance ?? 0) >= 0.5 ? `<button class="tiny" data-swap="${w.address}" title="swap this wallet's USDC back to SOL on Jupiter">swap ${fmtUsd(w.usdcBalance ?? 0)} USDC</button>` : '';
+      return `<div class="wrow${w.active ? ' active' : ''}${w.driving ? ' driving' : ''}"><span class="who">${who}</span><span class="pos">${pos}</span>${swap}${btn}</div>`;
     }).join('');
+    box.querySelectorAll<HTMLButtonElement>('button[data-swap]').forEach((b) => b.addEventListener('click', () => void this.swapUsdc(b.dataset.swap)));
     box.querySelectorAll<HTMLButtonElement>('button[data-w]').forEach((b) => b.addEventListener('click', async () => {
       try {
         const r = await api.liveTrading({ action: 'activate', to: b.dataset.w });
@@ -526,6 +528,16 @@ export class GhostPanel {
         if (r.ok && /^Driving/.test(r.message)) this.d.onResume();
       } catch (e) { this.msg((e as Error).message); }
     }));
+  }
+
+  private activeWallet: { address: string; driving: boolean } | null = null;
+  /** Update 24: RESUME puts the selected wallet's position on the road first if another wallet is driving. */
+  private async resume(): Promise<void> {
+    const aw = this.activeWallet;
+    if (this.mode === 'live' && aw && !aw.driving) {
+      try { const r = await api.liveTrading({ action: 'activate', to: aw.address }); if (!r.ok) { this.msg(r.message); return; } } catch (e) { this.msg((e as Error).message); return; }
+    }
+    this.d.onResume();
   }
 
   private msg(text: string, good = false): void {
@@ -615,6 +627,9 @@ export class GhostPanel {
         this.root.querySelectorAll<HTMLButtonElement>('.mode-toggle button').forEach((b) => b.classList.toggle('active', b.dataset.mode === st.engine));
       }
       this.renderWallets(st.wallets ?? []);
+      const aw = (st.wallets ?? []).find((x) => x.active) ?? null;
+      this.activeWallet = aw;
+      this.$.ticketWallet.textContent = this.mode === 'live' ? (aw ? `· on ${aw.signer === 'key' ? 'trading wallet' : 'Phantom'} ${shortAddr(aw.address)}` : '· REAL: connect a wallet') : '· practice';
       // Phantom (Update 11 B3): REAL stays disabled until a wallet is connected
       const w = st.wallet;
       this.walletConnected = !!w.address;
@@ -645,12 +660,13 @@ export class GhostPanel {
         const sp = this.solPrice();
         this.$.balance.textContent = `bankroll ${fmtUsd(this.bankroll, 0)}${sp ? ` ≈ ${fmtSol(this.bankroll / sp)}` : ''}`;
       }
-      const pos = st.position;
+      // Update 24: GO belongs to the selected wallet; RESUME shows when that wallet (REAL) or the practice engine holds a position
+      const pos = this.mode === 'live' ? (aw?.position ?? null) : st.position;
       const showResume = !!pos && !st.rewind;
       this.$.resumeRow.hidden = !showResume;
       this.$.btnGo.hidden = showResume;
       this.$.btnRewind.hidden = showResume;
-      if (showResume && pos) this.$.btnResume.textContent = `RESUME ${pos.market} ${pos.side === 1 ? 'LONG' : 'SHORT'} ${pos.leverage.toFixed(1)}x · liq ${fmtPrice(pos.liq, dp)}`;
+      if (showResume && pos) this.$.btnResume.textContent = `RESUME ${pos.market} ${pos.side === 1 ? 'LONG' : 'SHORT'} ${pos.leverage.toFixed(1)}x · liq ${fmtPrice(pos.liq, dp)}${this.mode === 'live' && aw && !aw.driving ? ' · switch to this wallet' : ''}`;
       const o = st.pendingOrder;
       this.$.orderRow.hidden = !o;
       if (o) this.$.orderText.textContent = `limit ${o.side === 1 ? 'LONG' : 'SHORT'} ${o.leverage.toFixed(1)}x @ ${fmtPrice(o.triggerPrice, dp)} pending${st.engine === 'live' ? ' on Jupiter' : ''}`;
@@ -757,10 +773,18 @@ export class GhostPanel {
   }
 
   /** Update 14: the trading wallet's USDC back to SOL through Jupiter (instant signing only). */
-  private async swapUsdc(): Promise<void> {
+  private async swapUsdc(wallet?: string): Promise<void> {
     try {
       this.msg('Swapping USDC → SOL on Jupiter…');
-      const r = await api.liveTrading({ action: 'swap-usdc' });
+      const r = await api.liveTrading({ action: 'swap-usdc', to: wallet });
+      if (r.ok && r.txB64 && r.requestId) {
+        // Update 26: Phantom signs the order here; Jupiter lands it
+        this.msg(r.message);
+        const signed = await signTransactionB64(r.txB64);
+        const r2 = await api.liveTrading({ action: 'swap-execute', signedTxB64: signed, requestId: r.requestId });
+        this.msg(r2.message, r2.ok);
+        return;
+      }
       this.msg(r.message, r.ok);
     } catch (e) {
       this.msg((e as Error).message);

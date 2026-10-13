@@ -120,13 +120,7 @@ function confirmPedal(): boolean {
  * REAL mode (Update 14): every pedal is a real transaction, so the first press only arms it; the same key
  * again, the button again, or Enter within 4 s sends it. Practice sends at once.
  */
-async function pedal(action: PedalArg, viaKey = false): Promise<void> {
-  if (viaKey && store.state.visual.chase) {
-    // CHASE (Update 23): the keys follow the picture: W pulls away (close part), ⇧W and Space escape (close
-    // everything), S lets it gain (add size). HARD (add size, no collateral) is a button only in CHASE.
-    const m: Partial<Record<PedalArg, PedalArg>> = { gas_light: 'brake_light', gas_hard: 'brake_full', brake_light: 'gas_light', brake_full: 'brake_full' };
-    action = m[action] ?? action;
-  }
+async function pedal(action: PedalArg): Promise<void> {
   const live = store.state.status?.engine === 'live';
   if (action !== 'cruise' && action !== 'cruise_off') { // Update 17: in practice too: a stray key must do nothing
     if (armed && armed.action === action) { confirmPedal(); return; }
@@ -207,7 +201,10 @@ function confirmReal(g: GhostFrame, extra: { inputToken?: 'SOL' | 'USDC'; inputA
 async function go(): Promise<void> {
   const s = store.state;
   if (s.screen !== 'ghost' || !modal.hidden) return;
-  if (s.status?.position) { goDrive(); return; }
+  // Update 24: in REAL, GO is for the selected wallet; another wallet's position may be driving meanwhile
+  const st0 = s.status;
+  const activeHasPos = st0?.engine === 'live' ? !!(st0.wallets ?? []).find((w) => w.active)?.position : !!st0?.position;
+  if (activeHasPos) { goDrive(); return; }
   const fc = focusCar(s.frame, s.primaryGhostId);
   store.update((x) => { x.frozenGhost = fc?.ghost ?? null; });
   sound.click();
@@ -318,7 +315,7 @@ function hoverCtx(): HoverCtx | null {
 installControls({
   confirmPedal: () => confirmPedal(),
   notice: (t) => toast(t, 'warn', 2500),
-  pedal: (a) => void pedal(a, true),
+  pedal: (a) => void pedal(a),
   go: () => void go(),
   nudgeLimit: (dir) => panel.nudgeLimit(dir),
   toggleInvert: () => { const inv = !(store.state.status?.mode.invert ?? false); void api.mode({ invert: inv }); },

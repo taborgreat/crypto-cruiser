@@ -154,7 +154,7 @@ async function handleApi(session: Session, req: http.IncomingMessage, res: http.
     return send(res, 200, await session.pedal(action));
   }
 
-  if (p === '/api/live/trading' && method === 'POST') return send(res, 200, await session.tradingAction(String(body.action ?? ''), { to: typeof body.to === 'string' ? body.to : undefined, from: typeof body.from === 'string' ? body.from : undefined, amountSol: typeof body.amountSol === 'number' ? body.amountSol : undefined }));
+  if (p === '/api/live/trading' && method === 'POST') return send(res, 200, await session.tradingAction(String(body.action ?? ''), { to: typeof body.to === 'string' ? body.to : undefined, from: typeof body.from === 'string' ? body.from : undefined, amountSol: typeof body.amountSol === 'number' ? body.amountSol : undefined, signedTxB64: typeof body.signedTxB64 === 'string' ? body.signedTxB64 : undefined, requestId: typeof body.requestId === 'string' ? body.requestId : undefined }));
   if (p === '/api/live/connect' && method === 'POST') return send(res, 200, await session.liveConnect(String(body.wallet)));
   if (p === '/api/live/disconnect' && method === 'POST') { session.liveDisconnect(); return send(res, 200, { ok: true }); }
   if (p === '/api/live/open' && method === 'POST') {

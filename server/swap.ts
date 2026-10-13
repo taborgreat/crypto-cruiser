@@ -45,21 +45,33 @@ async function ultra<T>(path: string, init?: RequestInit, timeoutMs = 25_000): P
   return json as T;
 }
 
-/** Swaps `usdc` USDC of the trading wallet into SOL. Returns the signature and the amounts Jupiter reports. */
-export async function swapUsdcToSol(tw: TradingWallet, usdc: number): Promise<{ txid: string; inUsdc: number; outSol: number }> {
-  if (!tw.keypair || !tw.address) throw new Error('No trading wallet');
+export interface SwapOrder { transaction: string; requestId: string; amount: number; outAmount: number }
+
+/** Update 26: an Ultra order for `usdc` USDC → SOL that `taker` must sign (the trading wallet here, Phantom in the browser). */
+export async function swapOrder(taker: string, usdc: number): Promise<SwapOrder> {
   const amount = Math.floor(usdc * 1e6);
   if (amount < 10_000) throw new Error('Less than 0.01 USDC to swap');
-  const order = await ultra<UltraOrder>(`/order?inputMint=${USDC_MINT}&outputMint=${SOL_MINT}&amount=${amount}&taker=${tw.address}`);
+  const order = await ultra<UltraOrder>(`/order?inputMint=${USDC_MINT}&outputMint=${SOL_MINT}&amount=${amount}&taker=${taker}`);
   if (order.errorMessage || order.error) throw new Error(`Jupiter: ${order.errorMessage ?? order.error}`);
   if (!order.transaction || !order.requestId) throw new Error('Jupiter returned no swap transaction');
-  const signed = tw.signB64(order.transaction);
-  const res = await ultra<UltraExecute>('/execute', { method: 'POST', body: JSON.stringify({ signedTransaction: signed, requestId: order.requestId }) }, 60_000);
+  return { transaction: order.transaction, requestId: order.requestId, amount, outAmount: Number(order.outAmount ?? 0) };
+}
+
+/** Hands the signed order to Jupiter, which lands it. */
+export async function swapExecute(signed: string, requestId: string, o: { amount: number; outAmount: number }): Promise<{ txid: string; inUsdc: number; outSol: number }> {
+  const res = await ultra<UltraExecute>('/execute', { method: 'POST', body: JSON.stringify({ signedTransaction: signed, requestId }) }, 60_000);
   if (res.status !== 'Success') {
     throw new Error(`Swap failed: ${res.error ?? (res.code !== undefined ? `code ${res.code}` : res.status ?? 'unknown')}${res.signature ? ` (tx ${res.signature.slice(0, 8)}…)` : ''}`);
   }
-  const inUsdc = Number(res.inputAmountResult ?? order.inAmount ?? amount) / 1e6;
-  const outSol = Number(res.outputAmountResult ?? order.outAmount ?? 0) / 1e9;
+  const inUsdc = Number(res.inputAmountResult ?? o.amount) / 1e6;
+  const outSol = Number(res.outputAmountResult ?? o.outAmount ?? 0) / 1e9;
   log.info('swap', `${inUsdc.toFixed(2)} USDC → ${outSol.toFixed(4)} SOL (${res.signature ?? 'no signature'})`);
   return { txid: res.signature ?? '', inUsdc, outSol };
+}
+
+/** Swaps `usdc` USDC of the trading wallet into SOL, signed here. */
+export async function swapUsdcToSol(tw: TradingWallet, usdc: number): Promise<{ txid: string; inUsdc: number; outSol: number }> {
+  if (!tw.keypair || !tw.address) throw new Error('No trading wallet');
+  const o = await swapOrder(tw.address, usdc);
+  return swapExecute(tw.signB64(o.transaction), o.requestId, o);
 }
