@@ -21,8 +21,9 @@ import {
 } from '../shared/types.js';
 import { MAX_LEV_TRADE, MIN_LEV_TRADE } from '../shared/jupiter.js';
 import { SettingsStore, ENV } from './config.js';
-import { FeedManager } from './feed/manager.js';
-import { LayerManager } from './layers.js';
+import type { FeedManager } from './feed/manager.js';
+import type { LayerManager } from './layers.js';
+import { MarketHub, type MarketCore } from './market.js';
 import { PaperEngine } from './engine/paper.js';
 import { LiveEngine } from './engine/live.js';
 import type { Engine, EngineEvent, PedalResult } from './engine/types.js';
@@ -43,15 +44,21 @@ interface GhostState { crashedAt: number | null; respawnAt: number; count: numbe
 
 export class Session extends EventEmitter {
   settingsStore = new SettingsStore();
-  feed = new FeedManager();
-  layers = new LayerManager();
+  /** Update 27: the market layer (feed, candles) is shared between sessions through the hub. */
+  core!: MarketCore;
+  private coreOff: Array<() => void> = [];
   conditions = new ConditionsEngine();
   marketKin: MarketKinematics;
   paper: PaperEngine;
   live = new LiveEngine();
   /** Update 22: one live engine per connected wallet; `live` is the active one (commands, Go). */
   private lives = new Map<string, LiveEngine>();
-  trading = new TradingWallet();
+  /** Update 27: the trading wallet belongs to the Phantom wallet that created it (one per owner, on disk). */
+  trading = TradingWallet.unowned();
+  ownerWallet: string | null = null;
+  /** When the last browser left this session (0 = a client is attached). */
+  idleSince = Date.now();
+  clients = 0;
   engine: Engine;
   mode: ModeState = { view: 'price-only', invert: false, live: false };
   market: Market = 'SOL-PERP';
@@ -75,10 +82,6 @@ export class Session extends EventEmitter {
   private liqTrack: { key: string; liq: number; t: number; rate: number } | null = null;
   /** Update 16: time to liquidation smoothed in log space (τ 2.5 s) per car, so the panel stops flickering. */
   private hwSmooth = new Map<string, { t: number; lh: number | null; lp: number | null; v: number }>();
-  /** Update 20: order flow for the crowd: the last minute's sizes (median), per-minute counts (the hour's rate). */
-  private flowSizes: Array<{ t: number; size: number }> = [];
-  private flowMinute = new Array<number>(60).fill(0);
-  private flowMinuteIdx = -1;
   private flowPending: FlowEvent[] = [];
   /** Update 26: a Phantom swap waiting for its signature. */
   private pendingSwap: { requestId: string; amount: number; outAmount: number; wallet: string } | null = null;
@@ -96,7 +99,7 @@ export class Session extends EventEmitter {
   private rewind: Rewind | null = null;
   private rewindDoneAt = 0;
 
-  constructor() {
+  constructor(readonly hub: MarketHub, readonly id = 'default', readonly userDir = ENV.dataDir) {
     super();
     const s = this.settingsStore.settings;
     this.hEff = s.horizonSec;
@@ -124,23 +127,33 @@ export class Session extends EventEmitter {
     return this.settingsStore.settings;
   }
 
+  get feed(): FeedManager { return this.core.feed; }
+  get layers(): LayerManager { return this.core.layers; }
+
   async start(): Promise<void> {
-    this.trading.load();
-    this.feed.on('tick', (t: Tick) => {
-      this.layers.onTick(t);
+    await this.bootMarket(this.market);
+    this.startTickLoop();
+    this.solPriceTimer = setInterval(() => void this.refreshSolPrice(), 30_000);
+    void this.refreshSolPrice();
+  }
+
+  /** Update 27: attach to the shared core for `market`; the per-session listeners are what the old feed hooks did. */
+  private attachCore(market: Market): void {
+    for (const off of this.coreOff) off();
+    this.coreOff = [];
+    if (this.core) this.hub.release(this.core);
+    const core = this.hub.acquire(market, this.settings.feed, this.settings.atrWindow);
+    this.core = core;
+    const onTick = (t: Tick) => {
       this.conditions.onTick(t.t, t.price);
-      this.layers.divergence = this.feed.divergence();
-      this.feed.candleCount = this.layers.c1m.candles.length;
       for (const e of this.allLives()) { if (this.market === 'SOL-PERP') e.solPrice = t.price; e.markPrice = t.price; }
-    });
-    this.feed.on('quote', (t: Tick) => this.layers.onQuote(t));
+    };
     // Update 3: the animation price drives the velocity EMAs at trade rate.
-    this.feed.on('anim', (a: Tick) => {
+    const onAnim = (a: Tick, flowEv: FlowEvent | null) => {
       if (this.rewind) return;
       this.marketKin.tick(a.t, a.price);
       this.lastKinT = a.t;
       this.lastAnim = a;
-      const flowEv = this.onFlow(a);
       if (flowEv) { this.flowPending.push(flowEv); if (this.flowPending.length > 12) this.flowPending.shift(); }
       const now = Date.now();
       if (now - this.lastAnimBroadcast >= ANIM_BROADCAST_MS) {
@@ -148,19 +161,15 @@ export class Session extends EventEmitter {
         const flow = this.flowPending.length ? this.flowPending.splice(0) : undefined;
         this.broadcast({ type: 'anim', t: a.t, price: a.price, v: this.marketKin.v, source: a.source, ...(flow ? { flow } : {}) });
       }
-    });
-    await this.bootMarket(this.market);
-    this.startTickLoop();
-    this.solPriceTimer = setInterval(() => void this.refreshSolPrice(), 30_000);
-    void this.refreshSolPrice();
+    };
+    core.on('tick', onTick);
+    core.on('anim', onAnim);
+    this.coreOff.push(() => core.off('tick', onTick), () => core.off('anim', onAnim));
   }
 
   private async bootMarket(market: Market): Promise<void> {
-    this.feed.start(market, this.settings.feed);
-    const rows = await FeedManager.loadHistory(market);
-    this.feed.seedHistory(rows);
-    this.layers.stop();
-    await this.layers.init(market, this.feed.history, this.settings.atrWindow);
+    this.attachCore(market);
+    await this.core.ready;
     void this.conditions.init(market).catch((err) => log.warn('conditions', 'init', (err as Error).message));
     this.marketKin.reset();
     this.lastAnim = null;
@@ -198,6 +207,8 @@ export class Session extends EventEmitter {
   }
 
   status(): StatusMsg {
+    // Update 27: a trading-wallet file copied in after Phantom connected is picked up without a restart
+    if (!this.trading.keypair && this.ownerWallet) this.trading.load();
     return {
       engine: this.engine.kind,
       feed: this.feed.status(),
@@ -207,7 +218,7 @@ export class Session extends EventEmitter {
       mode: { ...this.mode, live: this.engine.kind === 'live' },
       settings: this.settings,
       wallet: { address: this.live.wallet, solBalance: this.live.solBalance, usdcBalance: this.live.usdcBalance, solPrice: this.live.solPrice, signer: this.live.signer, positions: this.live.positions.length },
-      tradingWallet: { address: this.trading.address, active: this.live.signer === 'key' && !!this.live.wallet },
+      tradingWallet: { address: this.trading.address, active: this.live.signer === 'key' && !!this.live.wallet, owner: this.ownerWallet },
       wallets: this.walletSummaries(),
       liquidated: this.liquidated,
       bankrollUsd: this.paper.bankrollUsd,
@@ -294,24 +305,6 @@ export class Session extends EventEmitter {
    * pure trend said "not closing" too often). The trend wins when it closes faster. The time is then smoothed in
    * log space (τ 1.5 s); "not closing" only when neither the smoothed speed nor the trend closes.
    */
-  /** Update 20: one print classified: size against the last minute's median, busyness against the last hour. */
-  private onFlow(a: Tick): FlowEvent | null {
-    if (!a.side || a.size === undefined || !(a.size > 0)) return null;
-    const t = a.t;
-    this.flowSizes.push({ t, size: a.size });
-    while (this.flowSizes.length && this.flowSizes[0].t < t - 60_000) this.flowSizes.shift();
-    const sorted = this.flowSizes.map((x) => x.size).sort((p, q) => p - q);
-    const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : a.size;
-    const mi = Math.floor(t / 60_000) % 60;
-    if (mi !== this.flowMinuteIdx) { this.flowMinute[mi] = 0; this.flowMinuteIdx = mi; }
-    this.flowMinute[mi]++;
-    const hourRate = this.flowMinute.reduce((s, n) => s + n, 0) / 3600;
-    let n10 = 0;
-    for (let i = this.flowSizes.length - 1; i >= 0 && this.flowSizes[i].t >= t - 10_000; i--) n10++;
-    const busy = hourRate > 0 ? Math.max(0, Math.min(3, n10 / 10 / hourRate)) : 1;
-    return { t, side: a.side === 'buy' ? 1 : -1, size: a.size, sizeUsd: a.size * a.price, ratio: median > 0 ? a.size / median : 1, busy };
-  }
-
   private smoothHeadway(key: string, t: number, gap: number, vClose: number, vCloseTrend: number, aClose: number): [number, number] {
     const st = this.hwSmooth.get(key) ?? { t, lh: null, lp: null, v: vClose };
     const dt = Math.max(0, (t - st.t) / 1000);
@@ -750,7 +743,7 @@ export class Session extends EventEmitter {
   }
 
   restartFeed(): void {
-    this.feed.start(this.market, this.settings.feed);
+    this.core.restartFeed(this.settings.feed);
   }
 
   async openPaper(params: OpenParams): Promise<PedalResult> {
@@ -893,15 +886,17 @@ export class Session extends EventEmitter {
 
   /** Update 13: the trading wallet: create / use (instant signing) / back to Phantom / fund / withdraw. */
   async tradingAction(action: string, opts: { to?: string; from?: string; amountSol?: number; signedTxB64?: string; requestId?: string }): Promise<{ ok: boolean; message: string; txB64?: string; txid?: string; address?: string; requestId?: string }> {
+    if (!this.trading.keypair && this.ownerWallet) this.trading.load();
     try {
       switch (action) {
         case 'create': {
+          if (!this.ownerWallet) return { ok: false, message: 'Connect Phantom first: the trading wallet belongs to the Phantom wallet that creates it.' };
           const addr = this.trading.address ?? this.trading.create();
           this.broadcastStatus(true);
           return { ok: true, message: `Trading wallet ${addr.slice(0, 4)}…${addr.slice(-4)} ready. Fund it from Phantom, then press "use instant".`, address: addr };
         }
         case 'use': {
-          if (!this.trading.address) return { ok: false, message: 'Create the trading wallet first.' };
+          if (!this.trading.address) return { ok: false, message: this.ownerWallet ? 'Create the trading wallet first.' : 'Connect Phantom first, then create its trading wallet.' };
           const te = this.liveFor(this.trading.address);
           this.live = te;
           if (te.signer !== 'key' || te.wallet !== this.trading.address) await te.useTradingWallet(this.trading);
@@ -945,11 +940,13 @@ export class Session extends EventEmitter {
         }
         case 'fund-tx': {
           if (!opts.from || !(opts.amountSol !== undefined && opts.amountSol > 0)) return { ok: false, message: 'Amount and source wallet required.' };
+          if (this.ownerWallet && opts.from !== this.ownerWallet) return { ok: false, message: `This trading wallet belongs to Phantom ${this.ownerWallet.slice(0, 4)}…; fund it from that wallet.` };
           const txB64 = await this.trading.fundTx(opts.from, opts.amountSol);
           return { ok: true, message: 'Sign the transfer in Phantom.', txB64 };
         }
         case 'withdraw': {
           if (!opts.to) return { ok: false, message: 'Destination wallet required.' };
+          if (this.ownerWallet && opts.to !== this.ownerWallet) return { ok: false, message: `This trading wallet belongs to Phantom ${this.ownerWallet.slice(0, 4)}…; it only withdraws back there.` };
           const r = await this.trading.withdrawAll(opts.to);
           void this.live.refreshBalance();
           return { ok: true, message: `Sent ${r.sol.toFixed(4)} SOL back to Phantom (tx ${r.txid.slice(0, 8)}…)`, txid: r.txid };
@@ -1017,6 +1014,8 @@ export class Session extends EventEmitter {
 
   async liveConnect(wallet: string): Promise<{ ok: boolean; message: string }> {
     try {
+      this.setOwner(wallet);
+      log.info('live', `session ${this.id.slice(0, 8)}: Phantom ${wallet.slice(0, 4)}…${wallet.slice(-4)} connected · trading wallet ${this.trading.address ?? 'none yet'}`);
       const e = this.liveFor(wallet);
       this.live = e;
       if (e.wallet !== wallet) await e.connect(wallet);
@@ -1032,6 +1031,17 @@ export class Session extends EventEmitter {
     } catch (err) {
       return { ok: false, message: (err as Error).message };
     }
+  }
+
+  /** Update 27: the Phantom wallet on this session owns its own trading wallet (data/wallets/<owner>/). */
+  private setOwner(wallet: string): void {
+    if (this.ownerWallet === wallet) return;
+    if (this.ownerWallet && this.trading.address && this.allLives().some((e) => e.signer === 'key' && e.wallet === this.trading.address && e.position)) {
+      log.warn('trading', `owner change ${this.ownerWallet.slice(0, 4)}… -> ${wallet.slice(0, 4)}… while the trading wallet holds a position; its engine keeps running`);
+    }
+    this.ownerWallet = wallet;
+    this.trading = TradingWallet.forOwner(wallet);
+    if (!this.trading.load()) this.trading.adoptLegacy();
   }
 
   liveDisconnect(): void {
@@ -1067,11 +1077,14 @@ export class Session extends EventEmitter {
   }
 
   shutdown(): void {
-    this.feed.stop();
-    this.layers.stop();
+    for (const off of this.coreOff) off();
+    this.coreOff = [];
+    if (this.core) this.hub.release(this.core);
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.solPriceTimer) clearInterval(this.solPriceTimer);
     for (const e of this.allLives()) e.disconnect();
-    log.info('session', 'shutdown');
+    log.info('session', `shutdown ${this.id.slice(0, 8)}`);
+    this.emit('shutdown');
+    this.removeAllListeners();
   }
 }

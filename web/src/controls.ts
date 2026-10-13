@@ -5,6 +5,8 @@
 import type { PedalAction } from '../../shared/types.js';
 
 export interface ControlHandlers {
+  toggleFlow(): void;
+  toggleZen(): void;
   pedal(action: PedalAction): void;
   /** Sends the armed pedal; false when nothing is armed. */
   confirmPedal(): boolean;
@@ -48,6 +50,8 @@ export const KEY_HELP: Array<[string, string]> = [
   ['M', 'drop a flag (rewind or live)'],
   ['Q (hold)', 'look back at the road behind'],
   ['B', 'bridge chart drawer'],
+  ['F', 'order flow list: every print, buys vs sells'],
+  ['Z', 'zen: only the road and the pedals'],
   ['I', 'inspect panel (every live value, source, formula)'],
   ['L', 'label every object on the road'],
   ['N', 'invert road'],
@@ -120,6 +124,8 @@ export function installControls(h: ControlHandlers, isDriving: () => boolean, is
       case 'l': case 'L': h.toggleLabels(); break;
       case 'b': case 'B': h.toggleChart(); break;
       case 'h': case 'H': case '?': h.toggleHelp(); break;
+      case 'f': case 'F': h.toggleFlow(); break;
+      case 'z': case 'Z': h.toggleZen(); break;
       default: return;
     }
   };

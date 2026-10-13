@@ -5,13 +5,14 @@ import { MARKETS, type Frame, type GhostParams, type RewindLane, type ServerMsg,
 import { Sound } from './audio.js';
 import { MUSIC_CREDIT, Music } from './music.js';
 import { Pages } from './pages.js';
-import type { GhostFrame } from '../../shared/types.js';
+import type { GhostFrame, PedalAction } from '../../shared/types.js';
 import { api } from './api.js';
 import { BridgeChart } from './chart.js';
 import { installControls } from './controls.js';
 import { fmtDuration, fmtHeadway, fmtPct, fmtPrice, fmtSignedUsd, fmtTime, fmtUsd, shortSpan } from './format.js';
 import { Labels, Tooltip, tooltipLines, type HoverCtx } from './hover.js';
-import { Hud } from './hud.js';
+import { Hud, pedalNow as pedalNowText, pedalWhy } from './hud.js';
+import { FlowPanel } from './flow.js';
 import { ExitsPanel } from './exits.js';
 import { InspectPanel } from './inspect.js';
 import { Render2D } from './render2d.js';
@@ -107,6 +108,7 @@ function disarmPedal(): void {
   clearTimeout(armed.timer);
   armed = null;
   hud.arm(null);
+  hud.confirmSheet(null);
 }
 /** Enter (or the same key again) sends the armed REAL pedal. */
 function confirmPedal(): boolean {
@@ -125,11 +127,15 @@ async function pedal(action: PedalArg): Promise<void> {
   if (action !== 'cruise' && action !== 'cruise_off') { // Update 17: in practice too: a stray key must do nothing
     if (armed && armed.action === action) { confirmPedal(); return; }
     disarmPedal();
-    armed = { action, timer: setTimeout(() => { armed = null; hud.arm(null); }, CONFIRM_MS) };
+    armed = { action, timer: setTimeout(() => { armed = null; hud.arm(null); hud.confirmSheet(null); }, CONFIRM_MS) };
     hud.arm(action);
     hud.flash(action);
     sound.click();
-    toast(`${live ? 'REAL' : 'PRACTICE'} · ${hud.pedalName(action)} · push again (or Enter) to confirm`, 'warn', CONFIRM_MS);
+    // Update 27: the confirm sheet: the numbers of this press, the strategy behind the pedal, and how to confirm
+    const s = store.state;
+    const why = pedalWhy(action as PedalAction);
+    const now = s.frame?.car && s.status ? pedalNowText(action as PedalAction, s.frame.car, s.frame, s.status.settings).replace(/^\S+ /, '') : '';
+    hud.confirmSheet({ mode: live ? 'REAL' : 'PRACTICE', name: hud.pedalName(action), now, why: why?.why ?? '', when: why?.when ?? '', secs: CONFIRM_MS / 1000 });
     return;
   }
   await pedalNow(action);
@@ -239,6 +245,13 @@ function dropFlag(): void {
   else void api.flag().then((r) => toast(`Flag at ${fmtPrice(r.flag.price)}`, 'good', 2500)).catch((e: Error) => toast(e.message, 'err'));
 }
 
+/** Update 27: V flips the preview's bird's-eye before Go, and the drive's bird's-eye once a car is on the road. */
+function toggleTopDown(): void {
+  const v = store.state.visual;
+  if (store.state.frame?.car) store.setVisual({ topDownDrive: !v.topDownDrive });
+  else store.setVisual({ topDown: !v.topDown });
+}
+
 const TAG_MODES = ['on', 'faded', 'side', 'off'] as const;
 /** Update 14: the tags above the cars cycle on → faded → to the side → off. */
 function cycleTags(): void {
@@ -254,7 +267,7 @@ const hud = new Hud($('#hud'), {
   onTags: () => cycleTags(),
   onMute: () => store.setVisual({ muted: !store.state.visual.muted }),
   onChase: () => store.setVisual({ chase: !store.state.visual.chase }),
-  onTopDown: () => store.setVisual({ topDown: !store.state.visual.topDown }),
+  onTopDown: () => toggleTopDown(),
   onExit: () => {
     if (store.state.frame?.rewind) void api.rewindControl('stop').catch(() => undefined);
     goMenu();
@@ -267,8 +280,49 @@ const hud = new Hud($('#hud'), {
   onExits: () => exitsPanel.toggle(),
   onPage: (k) => pages.toggle(k),
   onMirrorHeight: (px) => store.setVisual({ mirrorHeight: px }),
+  onRearSize: (h, w) => store.setVisual({ rearH: h, rearW: w }),
+  onFlow: () => flowPanel.toggle(),
+  onZen: () => store.setVisual({ zen: !store.state.visual.zen }),
+  onPanel: (name) => togglePanel(name),
+  onPanelMove: (name, pos) => { const panelPos = { ...store.state.visual.panelPos }; if (pos) panelPos[name] = pos; else delete panelPos[name]; store.setVisual({ panelPos }); },
+  openPanels: () => openPanels(),
   onHorizon: (sec) => void api.settings(sec === null ? { autoHorizonRoom: true } : { horizonSec: sec, autoHorizonRoom: false }).catch((e: Error) => toast(e.message, 'err')),
 });
+/** Update 27: every panel by name: what is open now, and one switch for each (the PANELS menu, the ✕ buttons, the keys). */
+function openPanels(): Set<string> {
+  const s = store.state;
+  const out = new Set<string>();
+  for (const name of ['chips', 'pod', 'headway', 'mirror', 'tiles', 'music']) if (!s.visual.hidden.includes(name)) out.add(name);
+  if (s.visual.chartOpen) out.add('chart');
+  if (flowPanel.visible) out.add('flow');
+  if (exitsPanel.visible) out.add('exits');
+  if (inspect.visible) out.add('inspect');
+  if (settings.visible) out.add('settings');
+  if (rewindPanel.visible) out.add('rewind');
+  if (helpVisible) out.add('help');
+  if (s.visual.labelAll) out.add('labels');
+  if (s.visual.zen) out.add('zen');
+  return out;
+}
+function togglePanel(name: string): void {
+  const s = store.state;
+  switch (name) {
+    case 'chips': case 'pod': case 'headway': case 'mirror': case 'tiles': case 'music': {
+      const hidden = s.visual.hidden.includes(name) ? s.visual.hidden.filter((x) => x !== name) : [...s.visual.hidden, name];
+      store.setVisual({ hidden });
+      return;
+    }
+    case 'chart': store.setVisual({ chartOpen: !s.visual.chartOpen }); return;
+    case 'reset-layout': store.setVisual({ panelPos: {} }); return;
+    case 'flow': flowPanel.toggle(); return;
+    case 'exits': exitsPanel.toggle(); return;
+    case 'inspect': inspect.toggle(); return;
+    default: return;
+  }
+}
+const flowEl = document.createElement('div');
+$('#stage').appendChild(flowEl);
+const flowPanel = new FlowPanel(flowEl);
 const exitsEl = document.createElement('div');
 exitsEl.className = 'exits-panel';
 exitsEl.hidden = true;
@@ -324,7 +378,7 @@ installControls({
     const cur = store.state.status?.mode.view ?? 'price-only';
     void api.mode({ view: order[(order.indexOf(cur) + 1) % order.length] });
   },
-  toggleTopDown: () => store.setVisual({ topDown: !store.state.visual.topDown }),
+  toggleTopDown: () => toggleTopDown(),
   setRenderer: (r) => store.setVisual({ renderer: r }),
   toggleChase: () => store.setVisual({ chase: !store.state.visual.chase }),
   toggleSettings: () => settings.toggle(),
@@ -333,6 +387,8 @@ installControls({
   toggleInspect: () => inspect.toggle(),
   toggleLabels: () => store.setVisual({ labelAll: !store.state.visual.labelAll }),
   toggleChart: () => store.setVisual({ chartOpen: !store.state.visual.chartOpen }),
+  toggleFlow: () => flowPanel.toggle(),
+  toggleZen: () => store.setVisual({ zen: !store.state.visual.zen }),
   lookBack: (down) => { if (store.state.lookBack !== down) store.update((s) => { s.lookBack = down; }); },
   flag: dropFlag,
   rewindKey: (k) => rewindPanel.key(k),
@@ -340,7 +396,7 @@ installControls({
     if (!modal.hidden) return;
     if (store.state.results) { closeResults(); return; }
     if (helpVisible) { helpVisible = false; hud.setHelp(false); return; }
-    if (settings.visible || rewindPanel.visible || inspect.visible || exitsPanel.visible) { settings.hide(); rewindPanel.hide(); inspect.hide(); exitsPanel.hide(); return; }
+    if (settings.visible || rewindPanel.visible || inspect.visible || exitsPanel.visible || flowPanel.visible) { settings.hide(); rewindPanel.hide(); inspect.hide(); exitsPanel.hide(); flowPanel.hide(); return; }
     if (store.state.hoverPinned) { store.update((s) => { s.hoverPinned = false; s.hover = null; }); tooltip.hide(); return; }
     settings.toggle();
   },
@@ -368,8 +424,10 @@ installControls({
     if (hit && hit.kind !== 'text' && ctx) tooltip.show(hit.x, hit.y, tooltipLines(hit, ctx)); else tooltip.hide();
     chart.highlight(hitLineId(hit));
   };
+  const unpin = () => { if (store.state.hoverPinned) store.update((s) => { s.hoverPinned = false; s.hover = null; }); tooltip.hide(); };
+  tooltip.onClose = unpin;
   viewport.addEventListener('pointerdown', (e) => {
-    tooltip.hide();
+    unpin();
     if (e.button !== 0) return;
     dragStartY = e.clientY; dragX = e.clientX; dragY = e.clientY; moved = false;
     // a plain drag orbits the camera (Update 14); shift-drag scrubs the limit entry in PREVIEW
@@ -412,6 +470,10 @@ installControls({
       // a click on a lane focuses it (Update 8); tooltips are never pinned (Update 11 B5): the inspect drawer is the pinned view
       if (hit && (hit.kind === 'ghost' || hit.kind === 'ghost-ahead' || hit.kind === 'limit' || hit.kind === 'text') && hit.id && s.screen === 'ghost' && !s.frame?.rewind) {
         panel.focusLane(hit.id.split(':')[0]);
+      } else if (hit && (hit.kind === 'traffic' || hit.kind === 'ahead' || hit.kind === 'you') && (hit.kind !== 'traffic' || hit.text || s.visual.hoverAll)) {
+        // Update 27: a click on a car pins its panel (✕ or Esc or a click elsewhere closes it)
+        const ctx = hoverCtx();
+        if (ctx) { store.update((x) => { x.hoverPinned = true; x.hover = hit; }); tooltip.show(hit.x, hit.y, tooltipLines(hit, ctx), true); }
       }
     }
     dragStartY = null;
@@ -423,7 +485,7 @@ installControls({
     const s = store.state;
     if (s.visual.renderer !== '3d') return;
     const factor = Math.exp(e.deltaY * 0.0012);
-    if (s.visual.topDown && !s.frame?.car && !s.waitingFill) { r3d.zoomTopBy(factor); saveTop(); } // Update 16: the bird's-eye zooms too
+    if (!s.waitingFill && (s.frame?.car ? s.visual.topDownDrive : s.visual.topDown)) { r3d.zoomTopBy(factor); saveTop(); } // Update 16: the bird's-eye zooms too
     else { r3d.zoomBy(factor); saveOrbit(); }
     e.preventDefault();
   }, { passive: false });
@@ -625,7 +687,7 @@ connectWs((m: ServerMsg) => {
     case 'anim': {
       const prev = store.state.anim;
       store.state.anim = { t: m.t, price: m.price, v: m.v };
-      if (m.flow && m.flow.length) r3d.pushFlow(m.flow); // Update 20: the crowd
+      if (m.flow && m.flow.length) { r3d.pushFlow(m.flow); flowPanel.push(m.flow); } // Update 20: the crowd · Update 27: the list
       // the 1-second guarantee (Update 4): every trade event is an audible tick
       const fc = focusCar(store.state.frame, store.state.primaryGhostId);
       if (fc && prev && m.price !== prev.price && !store.state.results) sound.trade(fc.car.side * (m.price - prev.price) < 0);
@@ -769,6 +831,11 @@ function render(): void {
   if (showPanel) panel.show(); else panel.hide();
   app.classList.toggle('ghost', showPanel);
   $('#hud').classList.toggle('ghost', screen === 'ghost');
+  // Update 27: the pre-selection drive is black and white so it never reads as a real position
+  $('#stage').classList.toggle('preview', screen === 'ghost');
+  // Update 27: zen: only the road and the pedals (the side panel stays in the menu, where it is the whole point)
+  app.classList.toggle('zen', s.visual.zen && screen === 'drive');
+  $('#stage').classList.toggle('no-music', s.visual.hidden.includes('music'));
   $('#hud').classList.toggle('rewind', inRewind);
   if (chart.open !== s.visual.chartOpen) chart.setCollapsed(!s.visual.chartOpen);
   const want: Renderer = s.visual.renderer === '3d' && r3d.ok ? r3d : r2d;
@@ -789,7 +856,7 @@ function loop(now: number): void {
   const fc = focusCar(f, s.primaryGhostId);
   const color = fc ? headwayColor(Math.min(fc.car.headway_s ?? Infinity, fc.car.headway_proj_s ?? Infinity), thr) : 'green';
   if (jolt > 0) jolt = Math.max(0, jolt - dt * 1.6);
-  const topDown = s.visual.topDown && !f?.car && !s.waitingFill;
+  const topDown = !s.waitingFill && (f?.car ? s.visual.topDownDrive : s.visual.topDown);
   $('#hud').classList.toggle('caught', s.visual.chase && color === 'red' && !!f?.car); // CHASE: it is on you
   $('#hud').classList.toggle('tags-faded', s.visual.tags === 'faded'); // Update 17: the ticker fades with the tags
   const visible = laneVisibility(s);
@@ -810,6 +877,8 @@ function loop(now: number): void {
     primaryGhostId: s.primaryGhostId,
     visible,
     chase: s.visual.chase,
+    rearH: s.visual.rearH,
+    rearW: s.visual.rearW,
     poles: s.visual.poles,
     crowd: s.visual.crowd,
     traffic: s.visual.traffic,

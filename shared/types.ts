@@ -376,7 +376,7 @@ export interface StatusMsg {
   settings: Settings;
   wallet: { address: string | null; solBalance: number | null; usdcBalance: number | null; solPrice: number | null; signer: 'phantom' | 'key'; positions: number };
   /** Update 13: the on-machine trading wallet for instant signing. */
-  tradingWallet: { address: string | null; active: boolean };
+  tradingWallet: { address: string | null; active: boolean; owner?: string | null };
   /** Update 22: every connected wallet runs its own engine. `active` = where commands go, `driving` = the one on the road. */
   wallets: Array<{ address: string; signer: 'phantom' | 'key'; active: boolean; driving: boolean; solBalance: number | null; usdcBalance: number | null; position: { market: Market; side: Side; leverage: number; sizeUsd: number; liq: number; pubkey: string | null } | null }>;
   liquidated: boolean;

@@ -33,6 +33,8 @@ export interface RenderOpts {
   primaryGhostId: string;
   visible: Set<string>;   // Update 14: the lane ids to draw (focused + picked, or all)
   chase: boolean;         // Update 16: CHASE mode: the car in front is drawn as the monster behind you
+  rearH: number;          // Update 27: the rear-view strip, fraction of the stage height
+  rearW: number;          // Update 27: ... and width (centred)
   poles: boolean;         // Update 19: draw the roadside poles
   crowd: boolean;         // Update 20: the other cars change lanes on real trades; the road gains a lane each side
   traffic: boolean;       // Update 21: draw the other cars at all

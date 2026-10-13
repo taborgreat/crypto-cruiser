@@ -33,6 +33,16 @@ export interface HudHandlers {
   onHorizon(sec: number | null): void;
   /** Update 21: the mirror canvas was resized by its grip. */
   onMirrorHeight(px: number): void;
+  /** Update 27: the CHASE rear-view strip was resized by its corner grip (fractions of the stage). */
+  onRearSize(h: number, w: number): void;
+  /** Update 27: the order-flow list and zen mode. */
+  onFlow(): void;
+  onZen(): void;
+  /** Update 27: the PANELS menu: toggle one by name; `openPanels` says which are on right now (buttons light up). */
+  onPanel(name: string): void;
+  openPanels(): Set<string>;
+  /** Update 27: a panel was dragged (fractions of the stage) or sent home (null). */
+  onPanelMove(name: string, pos: { x: number; y: number } | null): void;
 }
 
 // Update 21: every pedal says what it does to the position; the exit is unmistakable and red
@@ -67,7 +77,26 @@ function el<T extends Element>(root: ParentNode, sel: string): T {
 }
 
 /** What each pedal would do right now, in dollars (Update 6). */
+/** Update 27: what each pedal is for and when it earns its place; under the live numbers in the hover. */
+const PEDAL_WHY: Partial<Record<PedalAction, { why: string; when: string }>> = {
+  gas_light: { why: 'More exposure at the same leverage: liq stays where it is, every move pays more.', when: 'The trade is working and you want to scale in. Not to rescue a loser.' },
+  gas_hard: { why: 'More size, no new collateral: leverage up, liq closer. Most P&L per move, least room.', when: 'Strong conviction with time to liq green and a stop set. The first thing to undo when it turns.' },
+  coast: { why: 'Collateral in, liq moves away. Buys time; costs nothing but idle capital.', when: 'Time to liq goes yellow or orange and the thesis still holds, or before a volatile moment.' },
+  brake_light: { why: 'Books part of the P&L and cuts size; liq moves away too.', when: 'At a target, or when the trend stalls. The default way to de-risk without leaving.' },
+  brake_full: { why: 'Ends the trade. The only pedal that stops the borrow-fee clock.', when: 'Thesis wrong, target hit, or time to liq red with nothing left to add. Never wait for the car ahead to decide.' },
+  withdraw: { why: 'Pulls collateral out: leverage up, liq closer, capital freed.', when: 'Well in profit with liq far away, to bank part of the gain while staying in. Never in the yellow.' },
+  cruise: { why: 'A trailing stop: follows the price your way and closes on a pullback of the set distance.', when: 'After a run in your favour, or when you cannot watch. Keep the distance wider than the usual noise (ATR).' },
+};
+
 export function pedalTooltip(action: PedalAction, c: CarFrame, f: Frame, s: Settings): string {
+  const now = pedalNow(action, c, f, s);
+  const w = PEDAL_WHY[action];
+  return w ? `${now}\n\nWHY  ${w.why}\nWHEN ${w.when}` : now;
+}
+
+export function pedalWhy(action: PedalAction): { why: string; when: string } | null { return PEDAL_WHY[action] ?? null; }
+
+export function pedalNow(action: PedalAction, c: CarFrame, f: Frame, s: Settings): string {
   const p = s.pedal;
   const pricing = MARKET_PRICING[f.market];
   const dp = MARKETS[f.market].priceDp;
@@ -101,7 +130,7 @@ export class Hud {
   constructor(private root: HTMLElement, private h: HudHandlers) {
     root.innerHTML = `
       <div class="live-border" id="liveBorder" hidden></div>
-      <div class="rear-strip" id="rearStrip" hidden><span>MIRROR · behind you</span></div>
+      <div class="rear-strip" id="rearStrip" hidden><div class="rear-grip" id="rearGrip" title="drag to resize the rear view"></div></div>
       <div class="hud-top">
         <div class="chips" id="chips">
           <span class="chip mode" id="chipMode">PRACTICE</span>
@@ -125,6 +154,7 @@ export class Hud {
           <button data-act="mute" id="btnMute" title="mute everything">🔊</button>
           <button data-act="chart" title="B">chart</button>
           <button data-act="exits" id="btnExits" title="take profit / stop loss" hidden>exits</button>
+          <button data-act="flow" id="btnFlow" title="F · every buy and sell on the tape, as a list">flow</button>
           <button data-act="exit" id="btnExit">menu</button>
           <button data-act="more" id="btnMore" title="more">⋯</button>
           <div class="hud-menu" id="hudMenu" hidden>
@@ -134,14 +164,28 @@ export class Hud {
             <button data-act="help" title="H">keys and help</button>
             <button data-act="page-trades" title="every trade of a wallet, with charts">trades page</button>
             <button data-act="page-conditions" title="the seven horizons in full">conditions page</button>
+            <button data-act="zen" title="Z · only the road and the pedals">zen mode</button>
+            <div class="menu-sec">PANELS · tap to show / hide</div>
+            <button data-panel="chips">top chips</button>
+            <button data-panel="pod">price pod</button>
+            <button data-panel="headway">time to liquidation</button>
+            <button data-panel="mirror">mirror</button>
+            <button data-panel="tiles">gauge and tiles</button>
+            <button data-panel="chart" title="B">bridge chart</button>
+            <button data-panel="flow" title="F">order flow list</button>
+            <button data-panel="exits">exits</button>
+            <button data-panel="inspect" title="I">inspect</button>
+            <button data-panel="music">music player</button>
+            <button data-panel="reset-layout" title="every dragged panel back to its place">reset layout</button>
             <button data-act="settings" title="Esc">settings</button>
           </div>
         </div>
       </div>
       <div class="toasts" id="toasts"></div>
+      <div class="zen-exit" id="zenExit" hidden title="Z">ZEN · tap or Z to exit</div>
       <div class="pricepod" id="pricePod" title="the live oracle price: your car"><div class="pp-main"><span id="ppPrice">—</span><span class="pp-dir" id="ppDir"></span></div><div class="pp-sub" id="ppSub">live price</div></div>
       <div class="hud-right">
-      <div class="headway green" id="headway">
+      <div class="headway green" id="headway"><button class="pclose" data-panel="headway" title="hide (PANELS menu brings it back)">✕</button>
         <div class="hw-label" id="hwLabel">TIME TO LIQUIDATION</div>
         <div class="hw-main" id="hwMain">—</div>
         <div class="hw-sub"><span id="hwDist">—</span> · projected <span id="hwProj">—</span></div>
@@ -152,7 +196,7 @@ export class Hud {
         </div>
         <div class="clear-tag" id="clearTag" hidden>CLEAR</div>
       </div>
-      <div class="mirror" id="mirror">
+      <div class="mirror" id="mirror"><button class="pclose" data-panel="mirror" title="hide (PANELS menu brings it back)">✕</button>
         <div class="m-title" id="mTitle">MIRROR</div>
         <div class="m-row"><span>entry line</span><span id="mEntry">—</span></div>
         <div class="m-row"><span>trailing stop</span><span id="mStop">none · T to set</span></div>
@@ -173,7 +217,7 @@ export class Hud {
         <div class="m-row"><span>candles 1m</span><span id="dnCandles">—</span></div>
       </div>
       <div class="hud-stack" id="hudStack">
-      <div class="hud-bottom">
+      <div class="hud-bottom" id="hudBottom">
         <div class="gauge speedo">
           <div class="g-label">LEVERAGE</div>
           <svg viewBox="0 0 200 110" id="speedoSvg">
@@ -204,7 +248,7 @@ export class Hud {
       <div class="banner" id="banner" hidden><h2 id="bannerTitle"></h2><p id="bannerText"></p><button id="bannerBtn" hidden>back to menu</button></div>
       <div class="help" id="help" hidden><h3>CONTROLS</h3><table id="helpTable"></table><p style="color:var(--muted);font-size:12px;margin:10px 0 0">Your car never moves on screen. The car ahead is your liquidation price. Time to liquidation is how long until you hit it at the current rate. Before you commit, each lane drives the position as if you had pressed Go that long ago; from above you compare their spacing, from the seat you feel the closing speed. Hover anything for its price and time.</p></div>
     `;
-    for (const id of ['liveBorder', 'rearStrip', 'hzMenu', 'chips', 'chipMode', 'chipGhost', 'chipRewind', 'chipMarket', 'chipPrice', 'chipHorizon', 'chipFeed', 'chipView', 'chipInvert', 'chipOrder', 'chipMore', 'hudMenu', 'btnExits', 'btnTop', 'btnRenderer', 'btnTags', 'btnChase', 'btnMute', 'btnExit',
+    for (const id of ['liveBorder', 'rearStrip', 'rearGrip', 'zenExit', 'hzMenu', 'chips', 'chipMode', 'chipGhost', 'chipRewind', 'chipMarket', 'chipPrice', 'chipHorizon', 'chipFeed', 'chipView', 'chipInvert', 'chipOrder', 'chipMore', 'hudMenu', 'btnExits', 'btnTop', 'btnRenderer', 'btnTags', 'btnChase', 'btnMute', 'btnExit',
       'toasts', 'pricePod', 'ppPrice', 'ppDir', 'ppSub', 'headway', 'hwLabel', 'hwMain', 'hwDist', 'hwProj', 'hwT0', 'hwT1', 'hwCaption', 'clearTag', 'mirror', 'mTitle', 'mEntry', 'mStop', 'scaleBar', 'sbMain', 'sbSub',
       'dashNumbers', 'dnAtr', 'dnAtr5', 'dnFunding', 'dnUtil', 'dnSpread', 'dnBasis', 'dnPrice', 'dnH', 'dnCandles',
       'speedoTicks', 'spLev', 'spSub', 'barThrottle', 'barBrake', 'snSize', 'snFuel', 'rGap', 'rGapL', 'rGapV', 'rGapS', 'rPnl', 'rPnlV', 'rPnlS', 'rEntry', 'rEntryV', 'rEntryS',
@@ -224,6 +268,22 @@ export class Hud {
       grip.addEventListener('pointerdown', (e) => { startY = e.clientY; startH = this.mirrorH; this.mirrorDragging = true; grip.setPointerCapture(e.pointerId); e.preventDefault(); });
       grip.addEventListener('pointermove', (e) => { if (!this.mirrorDragging) return; this.setMirrorHeight(Math.max(48, Math.min(320, startH + (e.clientY - startY)))); });
       const end = (e: PointerEvent) => { if (!this.mirrorDragging) return; this.mirrorDragging = false; try { grip.releasePointerCapture(e.pointerId); } catch { /* ignore */ } this.h.onMirrorHeight(this.mirrorH); };
+      grip.addEventListener('pointerup', end);
+      grip.addEventListener('pointercancel', end);
+    }
+    // Update 27: the rear-view strip's corner grip: drag down for taller, outward for wider (it stays centred)
+    {
+      const grip = el<HTMLDivElement>(root, '#rearGrip');
+      let startX = 0, startY = 0, startH = 0, startW = 0;
+      grip.addEventListener('pointerdown', (e) => { startX = e.clientX; startY = e.clientY; startH = this.rearH; startW = this.rearW; this.rearDragging = true; grip.setPointerCapture(e.pointerId); e.preventDefault(); e.stopPropagation(); });
+      grip.addEventListener('pointermove', (e) => {
+        if (!this.rearDragging) return;
+        const stage = this.root.getBoundingClientRect();
+        const h = Math.max(0.1, Math.min(0.8, startH + (e.clientY - startY) / Math.max(1, stage.height)));
+        const w = Math.max(0.15, Math.min(1, startW + (2 * (e.clientX - startX)) / Math.max(1, stage.width)));
+        this.setRearSize(h, w);
+      });
+      const end = (e: PointerEvent) => { if (!this.rearDragging) return; this.rearDragging = false; try { grip.releasePointerCapture(e.pointerId); } catch { /* ignore */ } this.h.onRearSize(this.rearH, this.rearW); };
       grip.addEventListener('pointerup', end);
       grip.addEventListener('pointercancel', end);
     }
@@ -271,9 +331,14 @@ export class Hud {
         else if (act === 'exits') this.h.onExits();
         else if (act === 'page-trades') this.h.onPage('trades');
         else if (act === 'page-conditions') this.h.onPage('conditions');
+        else if (act === 'flow') this.h.onFlow();
+        else if (act === 'zen') this.h.onZen();
       });
     });
     this.$.bannerBtn.addEventListener('click', () => { this.hideBanner(); this.h.onExit(); });
+    this.$.zenExit.addEventListener('click', () => this.h.onZen());
+    this.setupDrag();
+    root.querySelectorAll<HTMLButtonElement>('[data-panel]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); this.h.onPanel(b.dataset.panel!); }));
     this.stripCanvas.addEventListener('click', (e) => {
       const hit = this.stripSampleAt(e);
       if (hit) this.h.onStripClick(hit.t, hit.price);
@@ -311,6 +376,25 @@ export class Hud {
 
   setHelp(visible: boolean): void { this.$.help.hidden = !visible; }
 
+  /**
+   * Update 27: the confirm sheet. While a pedal is armed, one card at the top of the toast column says what the
+   * press does right now, why one presses it and when, and how to confirm. Null clears it.
+   */
+  confirmSheet(parts: { mode: string; name: string; now: string; why: string; when: string; secs: number } | null): void {
+    const old = this.$.toasts.querySelector('.toast.confirm');
+    if (old) old.remove();
+    if (!parts) return;
+    const d = document.createElement('div');
+    d.className = 'toast warn confirm';
+    const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    d.innerHTML = `<div class="cs-head"><b>${esc(parts.mode)} · ${esc(parts.name)}</b><span>tap again or ⏎ to confirm · ${parts.secs} s</span></div>`
+      + (parts.now ? `<div class="cs-now">${esc(parts.now)}</div>` : '')
+      + (parts.why ? `<div class="cs-why"><em>WHY</em> ${esc(parts.why)}</div>` : '')
+      + (parts.when ? `<div class="cs-why"><em>WHEN</em> ${esc(parts.when)}</div>` : '');
+    const first = this.$.toasts.querySelector('.toast:not(.status)');
+    if (first) this.$.toasts.insertBefore(d, first); else this.$.toasts.appendChild(d);
+  }
+
   /** REAL (Update 14): the pedal waiting for its confirming press. */
   arm(action: string | null): void {
     this.$.pedals.querySelectorAll<HTMLElement>('.pedal.armed').forEach((b) => b.classList.remove('armed'));
@@ -337,8 +421,86 @@ export class Hud {
     return p ? `${p.key} ${p.label}` : action;
   }
 
+  // ---- Update 27: draggable panels (desktop): a ⋮⋮ handle in the corner; dropped panels float over the road -------
+  private dragHome = new Map<string, { el: HTMLElement; parent: HTMLElement; next: Node | null }>();
+  private dragging: string | null = null;
+  private static DRAGGABLE: Array<[string, string]> = [['headway', '#headway'], ['mirror', '#mirror'], ['pod', '#pricePod'], ['tiles', '#hudBottom'], ['pedals', '#pedals'], ['dash', '#dashNumbers'], ['scale', '#scaleBar']];
+
+  private setupDrag(): void {
+    for (const [name, sel] of Hud.DRAGGABLE) {
+      const el = this.root.querySelector<HTMLElement>(sel);
+      if (!el) continue;
+      this.dragHome.set(name, { el, parent: el.parentElement!, next: el.nextSibling });
+      const handle = document.createElement('div');
+      handle.className = 'drag-handle';
+      handle.title = 'drag to move · double-click: back to its place';
+      handle.textContent = '⋮⋮';
+      el.prepend(handle);
+      let sx = 0, sy = 0, ox = 0, oy = 0;
+      handle.addEventListener('pointerdown', (e) => {
+        if (window.innerWidth <= 820) return; // phones: a column, nothing floats
+        e.preventDefault(); e.stopPropagation();
+        const r = el.getBoundingClientRect(), hr = this.root.getBoundingClientRect();
+        if (!el.classList.contains('floating')) {
+          el.style.width = `${r.width}px`;
+          this.root.appendChild(el);
+          el.classList.add('floating');
+        }
+        ox = r.left - hr.left; oy = r.top - hr.top;
+        el.style.left = `${ox}px`; el.style.top = `${oy}px`;
+        sx = e.clientX; sy = e.clientY;
+        this.dragging = name;
+        handle.setPointerCapture(e.pointerId);
+      });
+      handle.addEventListener('pointermove', (e) => {
+        if (this.dragging !== name) return;
+        const hr = this.root.getBoundingClientRect();
+        const x = Math.max(0, Math.min(hr.width - 40, ox + e.clientX - sx)), y = Math.max(0, Math.min(hr.height - 24, oy + e.clientY - sy));
+        el.style.left = `${x}px`; el.style.top = `${y}px`;
+      });
+      const end = (e: PointerEvent) => {
+        if (this.dragging !== name) return;
+        this.dragging = null;
+        try { handle.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+        const hr = this.root.getBoundingClientRect();
+        this.h.onPanelMove(name, { x: parseFloat(el.style.left) / Math.max(1, hr.width), y: parseFloat(el.style.top) / Math.max(1, hr.height) });
+      };
+      handle.addEventListener('pointerup', end);
+      handle.addEventListener('pointercancel', end);
+      handle.addEventListener('dblclick', (e) => { e.stopPropagation(); this.h.onPanelMove(name, null); });
+    }
+  }
+
+  /** Put every panel where the settings say: floating at a saved spot, or back in its home slot. */
+  private applyPanelPos(pos: Record<string, { x: number; y: number }>): void {
+    if (this.dragging) return;
+    const hr = this.root.getBoundingClientRect();
+    for (const [name, home] of this.dragHome) {
+      const p = window.innerWidth > 820 ? pos[name] : undefined;
+      const el = home.el;
+      if (p) {
+        if (!el.classList.contains('floating')) { el.style.width = `${el.getBoundingClientRect().width || 300}px`; this.root.appendChild(el); el.classList.add('floating'); }
+        el.style.left = `${p.x * hr.width}px`; el.style.top = `${p.y * hr.height}px`;
+      } else if (el.classList.contains('floating')) {
+        el.classList.remove('floating');
+        el.style.left = ''; el.style.top = ''; el.style.width = '';
+        home.parent.insertBefore(el, home.next && home.next.parentNode === home.parent ? home.next : null);
+      }
+    }
+  }
+
   private mirrorH = 96;
   private mirrorDragging = false;
+  private rearH = 0.32;
+  private rearW = 0.4;
+  private rearDragging = false;
+  private setRearSize(h: number, w: number): void {
+    this.rearH = h; this.rearW = w;
+    const st = this.$.rearStrip;
+    st.style.left = `${((1 - w) / 2) * 100}%`;
+    st.style.right = `${((1 - w) / 2) * 100}%`;
+    st.style.height = `${h * 100}%`;
+  }
   private setMirrorHeight(px: number): void {
     this.mirrorH = px;
     this.mirrorCanvas.style.height = `${px}px`;
@@ -449,23 +611,34 @@ export class Hud {
     if (st?.pendingOrder) this.$.chipOrder.textContent = `LIMIT ${st.pendingOrder.side === 1 ? 'LONG' : 'SHORT'} @ ${fmtPrice(st.pendingOrder.triggerPrice)}`;
     this.$.btnRenderer.textContent = s.visual.renderer === '3d' ? '3D' : '2D';
     this.$.btnTags.textContent = `tags: ${s.visual.tags}`;
-    this.$.btnTop.textContent = s.visual.topDown ? 'top-down' : 'drive';
+    const topFlag = f?.car ? s.visual.topDownDrive : s.visual.topDown; // Update 27: V means the drive's own bird's-eye once a car is on the road
+    this.$.btnTop.textContent = topFlag ? 'top-down' : 'drive';
     this.$.btnMute.textContent = s.visual.muted ? '🔇' : '🔊';
     this.$.btnMute.classList.toggle('on', s.visual.muted);
     this.$.btnChase.classList.toggle('on', s.visual.chase);
     this.$.btnChase.textContent = s.visual.chase ? 'CHASE' : 'TRAFFIC'; // Update 18: the button names the mode you are in
     if ((s.visual.chase ? 'chase' : 'traffic') !== this.pedalMode) this.buildPedals(s.visual.chase ? 'chase' : 'traffic');
     if (!this.mirrorDragging && s.visual.mirrorHeight !== this.mirrorH) this.setMirrorHeight(s.visual.mirrorHeight);
+    if (!this.rearDragging && (s.visual.rearH !== this.rearH || s.visual.rearW !== this.rearW)) this.setRearSize(s.visual.rearH, s.visual.rearW);
+    this.$.zenExit.hidden = !s.visual.zen;
+    this.applyPanelPos(s.visual.panelPos);
+    // Update 27: which panels are on: hidden ones get a class, every toggle button lights up while its panel is open
+    for (const name of ['chips', 'pod', 'headway', 'mirror', 'tiles', 'music']) this.root.classList.toggle(`no-${name}`, s.visual.hidden.includes(name));
+    const open = this.h.openPanels();
+    this.root.querySelectorAll<HTMLButtonElement>('[data-panel]').forEach((b) => { if (!b.classList.contains('pclose')) b.classList.toggle('on', open.has(b.dataset.panel!)); });
+    for (const [act, name] of [['exits', 'exits'], ['flow', 'flow'], ['chart', 'chart'], ['inspect', 'inspect'], ['rewind', 'rewind'], ['settings', 'settings'], ['help', 'help'], ['labels', 'labels'], ['zen', 'zen']]) {
+      this.root.querySelectorAll<HTMLButtonElement>(`[data-act="${act}"]`).forEach((b) => b.classList.toggle('on', open.has(name)));
+    }
     // CHASE (Update 16): same numbers, relabelled; the mirror strip frame shows in the seat view
     this.$.hwLabel.textContent = s.visual.chase ? 'TIME UNTIL CAUGHT' : 'TIME TO LIQUIDATION';
     this.$.rGapL.textContent = s.visual.chase ? 'DISTANCE AHEAD OF IT' : 'TO LIQUIDATION';
-    this.$.rearStrip.hidden = !(s.visual.chase && s.visual.renderer === '3d' && !(s.visual.topDown && !s.frame?.car && !s.waitingFill));
-    this.$.btnTop.classList.toggle('on', s.visual.topDown);
+    this.$.rearStrip.hidden = !(s.visual.chase && s.visual.renderer === '3d' && !(topFlag && !s.waitingFill));
+    this.$.btnTop.classList.toggle('on', topFlag);
     this.$.btnExit.hidden = ghostMode;
     this.$.btnExits.hidden = !f?.car || rewind;
     this.$.mirror.hidden = !f?.car;
     // price pod placement: top-centre (sky) in the chase cam; bottom-centre (windshield) in the driver cam, top-down and 2D
-    const topNow = s.visual.renderer === '2d' || (s.visual.topDown && !f?.car && !s.waitingFill);
+    const topNow = s.visual.renderer === '2d' || (topFlag && !s.waitingFill);
     const firstPerson = !topNow && s.visual.renderer === '3d' && s.visual.camera === 'driver';
     this.root.classList.toggle('pod-bottom', firstPerson);
     this.root.classList.toggle('pod-corner', topNow);

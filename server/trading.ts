@@ -26,15 +26,51 @@ export function base58Decode(s: string): Uint8Array {
 
 export class TradingWallet {
   keypair: Keypair | null = null;
-  private file = path.join(ENV.dataDir, 'trading-wallet.json');
+
+  private constructor(private file: string, readonly owner: string | null) {}
+
+  /** Update 27: the trading wallet of a Phantom owner lives in data/wallets/<owner>/trading-wallet.json. */
+  static forOwner(owner: string): TradingWallet {
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(owner)) throw new Error('bad wallet address');
+    return new TradingWallet(path.join(ENV.dataDir, 'wallets', owner, 'trading-wallet.json'), owner);
+  }
+
+  /** The placeholder before any Phantom wallet has connected: nothing loads, nothing is created. */
+  static unowned(): TradingWallet {
+    return new TradingWallet('', null);
+  }
+
+  static legacyFile(): string { return path.join(ENV.dataDir, 'trading-wallet.json'); }
 
   get address(): string | null { return this.keypair?.publicKey.toBase58() ?? null; }
 
+  /**
+   * The pre-Update-27 single wallet (data/trading-wallet.json): the first owner to connect without a wallet of
+   * their own takes it over, so a funded key is never left behind. The file is moved, so it happens once.
+   */
+  adoptLegacy(): boolean {
+    if (!this.owner || this.keypair) return false;
+    const legacy = TradingWallet.legacyFile();
+    if (!fs.existsSync(legacy)) return false;
+    try {
+      const kp = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(legacy, 'utf8')) as number[]));
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      fs.renameSync(legacy, this.file);
+      this.keypair = kp;
+      log.warn('trading', `legacy trading wallet ${this.address} now belongs to Phantom ${this.owner.slice(0, 4)}… (${this.file})`);
+      return true;
+    } catch (err) {
+      log.warn('trading', 'adopt legacy', (err as Error).message);
+      return false;
+    }
+  }
+
   /** TRADING_WALLET_SECRET (JSON array or base58) wins; else the file in the data folder. */
   load(): boolean {
+    if (!this.file) return false;
     const env = process.env.TRADING_WALLET_SECRET?.trim();
     try {
-      if (env) {
+      if (env && !this.owner) {
         this.keypair = Keypair.fromSecretKey(env.startsWith('[') ? Uint8Array.from(JSON.parse(env) as number[]) : base58Decode(env));
         log.info('trading', `trading wallet from env: ${this.address}`);
         return true;
@@ -52,8 +88,9 @@ export class TradingWallet {
 
   create(): string {
     if (this.keypair) return this.address!;
+    if (!this.file) throw new Error('No owner for the trading wallet');
     const kp = Keypair.generate();
-    fs.mkdirSync(ENV.dataDir, { recursive: true });
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file, JSON.stringify(Array.from(kp.secretKey)), { mode: 0o600 });
     this.keypair = kp;
     log.warn('trading', `created trading wallet ${kp.publicKey.toBase58()} · HOT KEY at ${this.file} · keep balances small`);

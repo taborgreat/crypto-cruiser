@@ -61,8 +61,6 @@ export function tooltipLines(hit: HoverHit, ctx: HoverCtx): string[] {
         `${ghost && hit.kind === 'ghost-ahead' ? ghost.label + ' · ' : ''}liquidation ${fmtPrice(c.liq, dp)} · ${fmtUsd(Math.abs(f.price - c.liq))} away (${fmtPct(c.gap_pct * 100)})`,
         `time to liq ${fmtHeadway(c.headway_s)} · projected ${fmtHeadway(c.headway_proj_s)}`,
         `trend: ${trendWord(c)} · liq moving: ${liqMoving}`,
-        `brake lights: trend over the last ${shortSpan(H)} ${fmtPct((c.v_gap_trend / c.leverage) * 100 * H, true)}`,
-        formula(`to_liq = |P − liq| · time = to_liq / closing speed`),
         tTruth,
       ];
     }
@@ -118,9 +116,10 @@ export function tooltipLines(hit: HoverHit, ctx: HoverCtx): string[] {
       return [`spread ${L.spread === null ? 'n/a' : `${(L.spread * 1e4).toFixed(1)} bp`}${car && L.spread !== null ? ` · est. slippage ${fmtUsd(car.size_usd * L.spread)} on close` : ''}`, `oracle vs feed ${L.divergence === null ? 'n/a' : `${(L.divergence * 1e4).toFixed(1)} bp`}`, tTruth];
     }
     case 'traffic': {
-      if (hit.text) return [hit.text, 'a real trade on the tape · buys drift right, sells left · big prints cut in', tTruth];
+      // Update 27: a trade car says the print and nothing else; a plain car says what sets the density
+      if (hit.text) return [hit.text];
       const L = f.layers;
-      return [`volatility: ATR ${L.atr === null ? '—' : fmtPct(L.atr * 100)} (1 m) · ${L.atr5m === null ? '—' : fmtPct(L.atr5m * 100)} (5 m)`, `traffic density follows the 1 m ATR`, tTruth];
+      return [`traffic · 1 m ATR ${L.atr === null ? '—' : fmtPct(L.atr * 100)}`];
     }
     case 'pole':
       return [`roadside light · scrolls at your speed`, car ? `you ${fmtRate((car.v_you / car.leverage) * 100, H, 'pct')} of price` : '', tTruth].filter(Boolean);
@@ -171,10 +170,18 @@ export function labelText(anchor: LabelAnchor, ctx: HoverCtx): string {
 }
 
 export class Tooltip {
-  constructor(private el: HTMLElement) {}
-  show(x: number, y: number, lines: string[]): void {
+  /** Update 27: called when the ✕ of a pinned tooltip is clicked. */
+  onClose: (() => void) | null = null;
+  constructor(private el: HTMLElement) {
+    this.el.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).classList.contains('tt-close')) { e.stopPropagation(); this.onClose?.(); }
+    });
+  }
+  show(x: number, y: number, lines: string[], pinned = false): void {
     if (!lines.length) { this.hide(); return; }
-    this.el.innerHTML = lines.map((l, i) => `<div class="${i === lines.length - 1 && l.startsWith('t = ') ? 'tt-time' : l.startsWith('⌁') ? 'tt-formula' : ''}">${l}</div>`).join('');
+    this.el.innerHTML = (pinned ? '<button class="tt-close" title="close (Esc)">✕</button>' : '')
+      + lines.map((l, i) => `<div class="${i === lines.length - 1 && l.startsWith('t = ') ? 'tt-time' : l.startsWith('⌁') ? 'tt-formula' : ''}">${l}</div>`).join('');
+    this.el.classList.toggle('pinned', pinned);
     this.el.hidden = false;
     const w = this.el.offsetWidth, h = this.el.offsetHeight;
     const px = Math.min(window.innerWidth - w - 12, x + 16);

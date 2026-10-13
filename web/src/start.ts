@@ -649,7 +649,7 @@ export class GhostPanel {
       this.$.btnCheckPos.hidden = !w.address;
       const tw = st.tradingWallet;
       this.$.twState.textContent = tw.active ? 'ON' : tw.address ? 'ready' : 'off';
-      this.$.twInfo.textContent = tw.address ? `${shortAddr(tw.address)}${tw.active && w.solBalance !== null ? ` · ${fmtSol(w.solBalance)}` : ''}${tw.active ? ' · signing every action' : ' · not in use'}` : 'no trading wallet yet';
+      this.$.twInfo.textContent = tw.address ? `${shortAddr(tw.address)}${tw.active && w.solBalance !== null ? ` · ${fmtSol(w.solBalance)}` : ''}${tw.active ? ' · signing every action' : ' · not in use'}` : tw.owner ? `no trading wallet yet for Phantom ${shortAddr(tw.owner)}` : 'no trading wallet yet · connect Phantom first (each Phantom wallet gets its own)';
       this.$.twCreate.hidden = !!tw.address;
       this.$.twUse.hidden = !tw.address || tw.active;
       this.$.twPhantom.hidden = !tw.active;

@@ -29,12 +29,18 @@ const LINE_COLORS: Record<string, string> = { entry: '#ffd23f', ahead: '#ff3b3b'
 const COLLAPSED_H = 24;
 const CLUSTER_PX = 14;
 
+/** Update 27: the chart opens on the last four minutes. */
+const DEFAULT_SPAN_SEC = 240;
+
 export class BridgeChart {
   private chart: IChartApi | null = null;
   private series: ISeriesApi<'Candlestick'> | null = null;
   private lines = new Map<string, LineRec>();
   private interval = 60;
   private manualInterval = 0;
+  /** Update 27: the chart opens on the last DEFAULT_SPAN_SEC; once the user zooms or scrolls it, hands off. */
+  private wantSpan = true;
+  private userZoomed = false;
   private bars: CandlestickData<UTCTimestamp>[] = [];
   private lastFetch = 0;
   private fetching = false;
@@ -51,7 +57,8 @@ export class BridgeChart {
   private lastLabelsT = 0;
 
   constructor(private root: HTMLElement, private d: ChartDeps, height: number, open: boolean) {
-    this.height = Math.max(100, height);
+    // Update 27: opens no taller than 30 % of the window (where it always sat); dragging can take it higher
+    this.height = Math.max(100, Math.min(height, window.innerHeight * 0.3));
     this.collapsed = !open;
     root.innerHTML = `
       <div class="chart-grip" id="chGrip" title="drag to resize"></div>
@@ -99,6 +106,10 @@ export class BridgeChart {
     });
     this.series = this.chart.addCandlestickSeries({ upColor: '#35d07f', downColor: '#ff3b3b', borderVisible: false, wickUpColor: '#35d07f', wickDownColor: '#ff3b3b', lastValueVisible: false, priceLineVisible: false, autoscaleInfoProvider: (orig: () => AutoscaleInfo | null) => this.autoscale(orig) });
     this.chart.subscribeCrosshairMove((p) => this.onCrosshair(p));
+    // the user's own zoom / scroll wins over the default span until the interval changes
+    this.body.addEventListener('wheel', () => { this.userZoomed = true; }, { passive: true });
+    this.body.addEventListener('touchmove', () => { this.userZoomed = true; }, { passive: true });
+    this.body.addEventListener('pointerdown', () => { this.userZoomed = true; });
     this.chart.subscribeClick((p) => this.onClick(p));
   }
 
@@ -114,14 +125,16 @@ export class BridgeChart {
     for (let i = from; i <= to; i++) { const b = this.bars[i]; if (b.low < min) min = b.low; if (b.high > max) max = b.high; }
     if (!Number.isFinite(min) || !Number.isFinite(max)) return orig();
     const mark = this.lines.get('mark')?.price ?? this.bars[this.bars.length - 1].close;
-    // Update 17: a tight window by default: ±0.4 % of the mark (about a dollar on SOL), widened only to keep the
-    // liquidation and entry lines and the last twenty bars in view, never wider than ±1.5 %
-    let half = mark * 0.004;
-    for (const id of ['ahead', 'entry']) { const l = this.lines.get(id); if (l) half = Math.max(half, Math.abs(l.price - mark) * 1.15); }
-    half = Math.min(half, mark * 0.015);
-    let lo = mark - half, hi = mark + half;
-    for (let i = Math.max(from, to - 20); i <= to; i++) { const b = this.bars[i]; if (b.low < lo) lo = b.low; if (b.high > hi) hi = b.high; }
-    void min; void max;
+    // Update 27: the candles fill the chart. The range is the visible bars plus 12 % breathing room; the entry line
+    // joins only when it is near (within twice the bars' own range of the mark). Liquidation and the far lines are
+    // read from the label column; letting them into the range squashed four minutes of candles into a flat line.
+    let lo = min, hi = max;
+    const entry = this.lines.get('entry');
+    if (entry) { const r = Math.max(max - min, mark * 0.0005); if (Math.abs(entry.price - mark) <= 2 * r) { lo = Math.min(lo, entry.price); hi = Math.max(hi, entry.price); } }
+    const minRange = mark * 0.0004; // never tighter than ±0.02 %: a dead-flat tape still shows a band, not a hairline
+    if (hi - lo < minRange) { const mid = (hi + lo) / 2; lo = mid - minRange / 2; hi = mid + minRange / 2; }
+    const pad = (hi - lo) * 0.12;
+    lo -= pad; hi += pad;
     return { priceRange: { minValue: lo, maxValue: hi } };
   }
 
@@ -147,12 +160,11 @@ export class BridgeChart {
     if (!this.collapsed) setTimeout(() => this.resize(), 50);
   }
 
-  /** The drawer never takes more than 30 % of the window, and leaves the road at least ~300 px above the HUD stack. */
+  /** Update 27: the drawer goes up to 60 % of the window; the road always keeps at least 160 px. */
   applyHeight(): void {
     const stage = this.root.parentElement;
     if (!stage) return;
-    const hudBottom = parseFloat(stage.style.getPropertyValue('--hud-bottom-h')) || 0;
-    const cap = Math.max(COLLAPSED_H, Math.min(window.innerHeight * 0.3, window.innerHeight - hudBottom - 300));
+    const cap = Math.max(COLLAPSED_H, Math.min(window.innerHeight * 0.6, window.innerHeight - 160));
     stage.style.setProperty('--drawer-h', `${this.collapsed ? COLLAPSED_H : Math.min(this.height, cap)}px`);
   }
 
@@ -173,10 +185,21 @@ export class BridgeChart {
       this.bars = r.candles.map((c) => this.toBar(c));
       this.series.setData(this.bars);
       this.lastMarkersKey = '';
+      if (this.wantSpan && !this.userZoomed) this.applyDefaultSpan();
     } catch { /* keep what we have */ } finally {
       this.fetching = false;
       this.lastFetch = performance.now();
     }
+  }
+
+  /** Update 27: show the last DEFAULT_SPAN_SEC (at least ~30 bars of a coarse interval) ending at now. */
+  private applyDefaultSpan(): void {
+    if (!this.chart || !this.bars.length) return;
+    const span = Math.max(DEFAULT_SPAN_SEC, this.interval * 30);
+    const last = this.bars[this.bars.length - 1].time as number;
+    const to = last + this.interval * 4;
+    this.chart.timeScale().setVisibleRange({ from: (to - span) as UTCTimestamp, to: to as UTCTimestamp });
+    this.wantSpan = false;
   }
 
   private liveBar(tMs: number, price: number): void {
@@ -225,6 +248,7 @@ export class BridgeChart {
     (this.root.querySelector('#chFollow') as HTMLElement).textContent = this.manualInterval ? '' : `follows H (${shortSpan(want)})`;
     if (want !== this.interval || (!this.bars.length && nowMs - this.lastFetch > 2000)) {
       this.interval = want;
+      this.wantSpan = true; this.userZoomed = false;
       this.chart.applyOptions({ timeScale: { secondsVisible: want < 60 } });
       void this.refetch();
     } else if (nowMs - this.lastFetch > 10_000) void this.refetch();

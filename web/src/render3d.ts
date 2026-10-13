@@ -34,9 +34,7 @@ const ORBIT_FP = 1.6;  // closer than this is first person: my own car is not dr
 const ORBIT_HOME = { dist: 7, yaw: 0, pitch: 0.26 }; // just behind the car
 // CHASE (Update 16): the mirror strip, as fractions of the viewport height from the top
 const REAR_TOP = 0.14;
-const REAR_H = 0.32;
-const REAR_LEFT = 0.3;  // Update 17: cut off at the sides like a mirror: 30 % margins, 40 % wide
-const REAR_W = 0.4;
+// Update 27: height and width are settings (visual.rearH / rearW); the strip stays centred
 const DASH_PERIOD = 12;
 const ELEV_SCALE = 7;    // metres of road height per car length of "hill"
 const STREAKS = 56;
@@ -66,6 +64,7 @@ interface TrafficCar {
   // Update 20: a lane change in progress (signal, then a slide), cooldowns, a cut-in's road target, the big-print size
   from: number; to: number; changeStart: number; changeDur: number; signalUntil: number; nextAllowed: number; bigUntil: number; leaveAt: number; zTo: number | null; edge: number;
   base: number; // Update 25: the car's own cruising speed (× the flow); `speed` returns to it after a trade moved it
+  wallUntil: number; // Update 27: while set, the car is a wall: it holds a few lengths ahead of me and never passes
 }
 interface CarModel { g: THREE.Group; bodyMat: THREE.MeshStandardMaterial; edgeMat: THREE.LineBasicMaterial; headMat: THREE.MeshBasicMaterial; brakes: THREE.MeshStandardMaterial; bloom: THREE.Sprite[]; glow: THREE.PointLight | null }
 interface GhostModel { car: CarModel; ahead: CarModel; monster?: CarModel; line: THREE.Mesh; entry: THREE.Mesh; trail: THREE.Line; trailGeo: THREE.BufferGeometry; aheadZ: number; carZ: number; impact: THREE.Sprite; side: Side; lane: number }
@@ -380,6 +379,9 @@ export class Render3D implements Renderer {
   private topInfoCur: TopInfo | null = null;
   private width = 1;
   private height = 1;
+  private rearH = 0.32;
+  private rearW = 0.4;
+  private rearShown = false; // Update 27: the mirror strip was drawn this frame, so it can be hovered
   private scroll = 0;
   private topScroll = 0;
   private poleScroll = 0;
@@ -406,7 +408,11 @@ export class Render3D implements Renderer {
   constructor() {
     this.el = document.createElement('div');
     try {
-      this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+      // Update 27: phones (Phantom's in-app browser among them) refuse the high-performance context now and then;
+      // try the plain one before giving up and falling back to 2D
+      try { this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' }); }
+      catch { this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'default' }); }
+      this.renderer.domElement.addEventListener('webglcontextlost', (e) => { e.preventDefault(); }, false);
       this.renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio || 1));
       this.renderer.outputColorSpace = THREE.SRGBColorSpace;
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -656,8 +662,14 @@ export class Render3D implements Renderer {
     if (!this.renderer || !this.active) return null;
     const rect = this.renderer.domElement.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
-    const ndc = new THREE.Vector2(((x - rect.left) / rect.width) * 2 - 1, -((y - rect.top) / rect.height) * 2 + 1);
-    this.raycaster.setFromCamera(ndc, this.camera);
+    const px = (x - rect.left) / rect.width, py = (y - rect.top) / rect.height;
+    // Update 27: inside the mirror strip the pointer looks through the rear camera, so the cars behind you hover too
+    const rx0 = (1 - this.rearW) / 2, ry0 = REAR_TOP;
+    const inRear = this.rearShown && px >= rx0 && px <= rx0 + this.rearW && py >= ry0 && py <= ry0 + this.rearH;
+    const ndc = inRear
+      ? new THREE.Vector2(((px - rx0) / this.rearW) * 2 - 1, -((py - ry0) / this.rearH) * 2 + 1)
+      : new THREE.Vector2(px * 2 - 1, -py * 2 + 1);
+    this.raycaster.setFromCamera(ndc, inRear ? this.rearCam : this.camera);
     const hits = this.raycaster.intersectObjects(this.pickables, true);
     for (const h of hits) {
       let o: THREE.Object3D | null = h.object;
@@ -701,8 +713,8 @@ export class Render3D implements Renderer {
   /** CHASE (Update 16): a label for something seen in the mirror strip, projected through the rear camera. */
   private anchorRear(id: string, kind: HoverKind, x: number, y: number, z: number, text?: string, cls?: string, align?: 'left' | 'right' | 'center'): void {
     const p = new THREE.Vector3(x, y, z).project(this.rearCam);
-    const sx = this.width * REAR_LEFT + ((p.x + 1) / 2) * this.width * REAR_W;
-    const sy = this.height * REAR_TOP + ((1 - p.y) / 2) * this.height * REAR_H;
+    const sx = this.width * (1 - this.rearW) / 2 + ((p.x + 1) / 2) * this.width * this.rearW;
+    const sy = this.height * REAR_TOP + ((1 - p.y) / 2) * this.height * this.rearH;
     this.anchorList.push({ id, kind, x: sx, y: sy, visible: p.z < 1 && p.x > -1.05 && p.x < 1.05 && p.y > -1.05 && p.y < 1.05, text, cls, align });
   }
 
@@ -971,7 +983,8 @@ export class Render3D implements Renderer {
     // CHASE (Update 16): the rear camera for the mirror strip: above my car, looking back down the road
     this.rearCam.position.set(this.camX, 4.2, -1.5);
     this.rearCam.lookAt(this.camX, 1.0, 60);
-    this.rearCam.aspect = (this.width * REAR_W) / Math.max(1, this.height * REAR_H);
+    this.rearH = o.rearH; this.rearW = o.rearW;
+    this.rearCam.aspect = (this.width * this.rearW) / Math.max(1, this.height * this.rearH);
     this.rearCam.updateProjectionMatrix();
 
     // CLEAR (Update 4): the 20-second stretch brightens the scene
@@ -1275,7 +1288,7 @@ export class Render3D implements Renderer {
       this.pickables.push(model.g);
       const lane = shoulders[i % shoulders.length];
       const base = 0.95 + hash01(i, 5) * 0.1;
-      this.traffic.push({ model, lane, z: -hash01(i, 3) * ROAD_AHEAD * 0.8 + 10, speed: base, base, from: lane, to: lane, changeStart: 0, changeDur: 0, signalUntil: 0, nextAllowed: 0, bigUntil: 0, leaveAt: 0, zTo: null, edge });
+      this.traffic.push({ model, lane, z: -hash01(i, 3) * ROAD_AHEAD * 0.8 + 10, speed: base, base, from: lane, to: lane, changeStart: 0, changeDur: 0, signalUntil: 0, nextAllowed: 0, bigUntil: 0, leaveAt: 0, zTo: null, edge, wallUntil: 0 });
     }
     // Update 20: the crowd is made of real trades. Each print on the fast feed may move one car: buys drift right,
     // sells left (invert flips it); the odds grow with size against the last minute's median (a median print ~3 %,
@@ -1284,9 +1297,10 @@ export class Render3D implements Renderer {
     // smooth slide; two seconds between moves per car; the whole field at most one change per two cars a second.
     const mySide = focus ? focus.side : 0;
     const dirSign = o.invert ? -1 : 1;
-    // Update 25: the crowd carries the flow in its motion relative to me. A trade WITH my side makes a car ahead back
-    // off (a huge one stops dead and I pass it); a trade AGAINST my side makes a car from behind rush past (a huge one
-    // comes through fast and cuts in ahead). Size sets how much: a median print barely, a 20× print all the way.
+    // Update 25 / 27: the crowd carries the flow in its motion relative to me. The car ahead is my liquidation, so a
+    // trade AGAINST my side (price toward liq) is traffic ahead slowing down and coming back at me: a wall; a huge one
+    // stops dead and cuts into my lane. A trade WITH my side (price away from liq) is a car from behind that rushes
+    // past: the road is flowing my way. Size sets how much: a median print barely, a 20× print all the way.
     // Buys still drift right and sells left as the quieter second cue.
     if (o.crowd && !top && want > 0) {
       for (const ev of this.flowQueue.splice(0)) {
@@ -1296,25 +1310,30 @@ export class Render3D implements Renderer {
         if (!cars.length) continue;
         const withMe = mySide !== 0 && ev.side === mySide;
         const against = mySide !== 0 && ev.side !== mySide;
-        const text = `${ev.side === 1 ? 'buy' : 'sell'} $${Math.round(ev.sizeUsd).toLocaleString()} · ${ev.ratio.toFixed(1)}× median · ${new Date(ev.t).toLocaleTimeString()}`;
-        if (withMe) {
+        const text = `${ev.side === 1 ? 'BUY' : 'SELL'} $${Math.round(ev.sizeUsd).toLocaleString()} · ${ev.ratio.toFixed(1)}× the minute's median · ${new Date(ev.t).toLocaleTimeString()}`;
+        if (against) {
+          // the wall: a car ahead brakes and drifts back toward me; a huge print stops it dead and pulls it into my lane
           const ahead = cars.filter((c) => c.z < -8 && c.changeStart === 0);
           const car = ahead.length ? ahead[Math.floor(Math.random() * ahead.length)] : cars[Math.floor(Math.random() * cars.length)];
+          if (car.z > -8) car.z = -(30 + Math.random() * 10);
           car.speed = Math.max(0, 1 - k);
-          car.model.g.userData.text = `${text} · with you → backing off`;
-          if (k > 0.6) car.bigUntil = nowMs + 20_000;
-        } else if (against) {
-          let car = cars.find((c) => c.z > 4 && c.changeStart === 0);
-          if (!car) { car = cars[Math.floor(Math.random() * cars.length)]; car.z = 30 + Math.random() * 8; }
-          car.speed = 1 + 2.2 * k;
-          car.model.g.userData.text = `${text} · against you → rushing past`;
+          car.wallUntil = nowMs + 2500 + 5500 * k;
+          car.model.g.userData.text = `${text} · against you · toward your liquidation`;
           if (k > 0.6) {
             car.bigUntil = nowMs + 20_000;
-            if (nowMs >= car.nextAllowed && nowMs >= this.nextChangeAt) {
+            if (nowMs >= car.nextAllowed && nowMs >= this.nextChangeAt && Math.round(car.lane) !== myLane) {
               car.from = Math.round(car.lane); car.to = myLane; car.signalUntil = nowMs + 500; car.changeStart = nowMs + 500; car.changeDur = 1200; car.zTo = -(9 + Math.random() * 4); car.leaveAt = nowMs + 4000; car.nextAllowed = nowMs + 3200;
               this.nextChangeAt = nowMs + 2000 / Math.max(1, want);
             }
           }
+        } else if (withMe) {
+          // the flow is mine: a car from behind overtakes; a huge print flies past
+          let car = cars.find((c) => c.z > 4 && c.changeStart === 0 && nowMs >= c.wallUntil);
+          if (!car) { car = cars[Math.floor(Math.random() * cars.length)]; car.z = 30 + Math.random() * 8; }
+          car.wallUntil = 0;
+          car.speed = 1 + 2.2 * k;
+          car.model.g.userData.text = `${text} · with you · away from your liquidation`;
+          if (k > 0.6) car.bigUntil = nowMs + 20_000;
         }
         if (Math.random() < 0.35 && nowMs >= this.nextChangeAt) {
           const dir = ev.side * dirSign;
@@ -1323,7 +1342,6 @@ export class Render3D implements Renderer {
             const car = movable[Math.floor(Math.random() * movable.length)];
             const dur = 1000 + Math.random() * 500;
             car.from = Math.round(car.lane); car.to = Math.round(car.lane) + dir; car.signalUntil = nowMs + 500; car.changeStart = nowMs + 500; car.changeDur = dur; car.zTo = null; car.nextAllowed = nowMs + 2000 + dur;
-            if (!car.model.g.userData.text) car.model.g.userData.text = text;
             this.nextChangeAt = nowMs + 2000 / Math.max(1, want);
           }
         }
@@ -1350,12 +1368,26 @@ export class Render3D implements Renderer {
         // cars ride the road at `speed` × the flow and I ride at my speed: slower cars come back to me, faster ones rush past
         c.speed += (c.base - c.speed) * (1 - Math.exp(-dt / 12));
         c.z += (vYouVis - c.speed * vRoadVis) * dt;
-        if (c.z < -ROAD_AHEAD * 0.9) { c.z = 30; c.speed = c.base; }
-        if (c.z > 40) { c.z = -ROAD_AHEAD * 0.85; c.speed = c.base; }
+        // Update 27: a wall car (a print against me) holds a few lengths ahead, then pulls away again; nothing drives
+        // through me: a car drifting back in my lane peels out of it before it reaches me
+        const inMyLane = Math.round(c.lane) === myLane && c.changeStart === 0;
+        const hold = inMyLane ? -10 : -7;
+        if (nowMs < c.wallUntil) {
+          if (c.z > hold) { c.z = hold; c.speed = 1; }
+        } else if (c.wallUntil > 0) { c.wallUntil = 0; c.speed = Math.max(c.base, 1.15); }
+        if (inMyLane && c.speed < 1 && c.z > -6 && c.z < 2 && nowMs >= c.nextAllowed) {
+          const dir = Math.round(c.lane) + 1 < laneN2 ? 1 : -1;
+          c.from = Math.round(c.lane); c.to = Math.round(c.lane) + dir; c.signalUntil = nowMs + 200; c.changeStart = nowMs + 200; c.changeDur = 700; c.zTo = null; c.nextAllowed = nowMs + 3000;
+          c.speed = Math.max(c.speed, 0.9);
+        }
+        if (c.z < -ROAD_AHEAD * 0.9) { c.z = 30; c.speed = c.base; c.wallUntil = 0; }
+        if (c.z > 40) { c.z = -ROAD_AHEAD * 0.85; c.speed = c.base; c.wallUntil = 0; }
       }
       c.lane = clamp(c.lane, 0, laneN2 - 1);
       const signaling = nowMs < c.signalUntil;
       c.model.edgeMat.color.set(signaling && Math.floor(nowMs / 120) % 2 === 0 ? 0xffb020 : c.edge);
+      // Update 27: brake lights on a car that is slowing or holding as a wall, so the print against me reads as braking
+      c.model.brakes.emissiveIntensity = nowMs < c.wallUntil || c.speed < c.base - 0.05 ? 2 : 0;
       const bigK = nowMs < c.bigUntil ? 1.35 : 1;
       c.model.g.scale.setScalar(lerp(c.model.g.scale.x, bigK, clamp(dt * 3, 0, 1)));
       c.model.g.position.set(this.seatX(c.lane, laneN2), yAt(c.z), c.z);
@@ -1368,14 +1400,15 @@ export class Render3D implements Renderer {
     this.fog.color.copy(this.scene.background as THREE.Color);
 
     this.renderer.render(this.scene, this.camera);
-    if (o.chase && !top && this.height > 4) {
+    this.rearShown = o.chase && !top && this.height > 4;
+    if (this.rearShown) {
       // CHASE (Update 16): the mirror strip: the scene again through the rear camera, into a band near the top
       const r = this.renderer;
-      const sh = Math.max(2, Math.round(this.height * REAR_H));
+      const sh = Math.max(2, Math.round(this.height * this.rearH));
       const y = Math.round(this.height * (1 - REAR_TOP)) - sh; // GL viewports count from the bottom
       r.autoClear = false;
       r.setScissorTest(true);
-      const x0 = Math.round(this.width * REAR_LEFT), sw = Math.max(2, Math.round(this.width * REAR_W));
+      const x0 = Math.round(this.width * (1 - this.rearW) / 2), sw = Math.max(2, Math.round(this.width * this.rearW));
       r.setScissor(x0, y, sw, sh);
       r.setViewport(x0, y, sw, sh);
       r.clear(true, true, false);

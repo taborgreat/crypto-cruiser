@@ -3,3 +3,5 @@ web/dist/
 .env
 *.log
 data/
+deploy/nginx-crypto.robokyle.org.conf
+deploy/crypto-cruiser.service

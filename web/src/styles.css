@@ -39,6 +39,8 @@ a { color: var(--accent); }
 #hud { position: absolute; left: 0; right: 0; top: 0; bottom: var(--drawer-h); }
 #viewport > * { position: absolute; inset: 0; width: 100%; height: 100%; }
 #viewport canvas { display: block; }
+/* Update 27: the pre-selection drive (lanes, ghosts) is black and white; colour means a position is on the road */
+#stage.preview #viewport canvas { filter: grayscale(1) contrast(1.08); }
 
 /* ---------------- labels + tooltip (Update 5 / 8) ---------------- */
 #labels { pointer-events: none; overflow: hidden; }
@@ -60,6 +62,26 @@ a { color: var(--accent); }
 #labels .label.break { background: transparent; border-color: transparent; backdrop-filter: none; color: var(--muted); font-size: 10px; margin: -6px 0 0 -70px; }
 #tooltip { position: absolute; left: 0; top: 0; z-index: 40; max-width: 460px; padding: 8px 10px; border-radius: 8px; font: 12px/1.5 var(--mono); font-variant-numeric: tabular-nums; pointer-events: none; }
 #tooltip .tt-time { color: var(--muted); font-size: 11px; margin-top: 2px; }
+/* Update 27: the order-flow list */
+.flow-panel { width: min(520px, 94vw); font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+.flow-panel h3 .small { font: 11px var(--mono); margin-left: 8px; }
+.flow-panel .long { color: var(--green); } .flow-panel .short { color: var(--red); }
+.flow-head, .flow-row { display: grid; grid-template-columns: 1.3fr 0.7fr 1fr 1fr 0.7fr; gap: 6px; padding: 2px 6px; }
+.flow-head { color: var(--muted); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; border-bottom: 1px solid var(--panel-border); margin-bottom: 4px; }
+.flow-list { max-height: 60vh; overflow: auto; }
+.flow-row { border-radius: 4px; }
+.flow-row.buy span:nth-child(2) { color: var(--green); font-weight: 700; }
+.flow-row.sell span:nth-child(2) { color: var(--red); font-weight: 700; }
+.flow-row.mid { background: rgba(255,255,255,0.04); }
+.flow-row.big { background: rgba(255,210,63,0.12); font-weight: 700; }
+/* Update 27: zen mode: the road and the pedals, nothing else */
+#app.zen > #start, #app.zen #hud .hud-top, #app.zen #hud .hud-right, #app.zen #hud .pricepod, #app.zen #hud .scalebar, #app.zen #hud .dash-numbers,
+#app.zen #hud .hud-bottom, #app.zen #hud .exits-panel, #app.zen #hud .live-border, #app.zen #stage > #music, #app.zen #stage > #chart, #app.zen #stage > #labels { display: none !important; }
+#app.zen #stage { --drawer-h: 0px !important; }
+.zen-exit { position: absolute; top: 10px; right: 12px; font: 10px var(--mono); letter-spacing: 0.2em; color: var(--muted); padding: 4px 8px; border: 1px solid var(--panel-border); border-radius: 8px; pointer-events: auto; cursor: pointer; z-index: 5; }
+#tooltip.pinned { pointer-events: auto; padding-right: 28px; border-color: rgba(255,255,255,0.45); }
+#tooltip .tt-close { position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border: 0; border-radius: 4px; background: rgba(255,255,255,0.12); color: var(--fg); font: 12px var(--mono); cursor: pointer; }
+#tooltip .tt-close:hover { background: rgba(255,255,255,0.3); }
 #tooltip .tt-formula { color: var(--accent); font-size: 11px; }
 
 /* ---------------- HUD ---------------- */
@@ -86,6 +108,12 @@ a { color: var(--accent); }
 .toast.warn { border-color: var(--yellow); color: #ffe8a3; }
 .toast.good { border-color: var(--green); color: #b8f5d5; }
 .toast.pinned { border-color: var(--accent); }
+.toast.confirm { max-width: 460px; }
+.toast.confirm .cs-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.toast.confirm .cs-head span { color: var(--muted); font-size: 11px; }
+.toast.confirm .cs-now { font-family: var(--mono); font-variant-numeric: tabular-nums; margin-top: 4px; color: var(--fg); }
+.toast.confirm .cs-why { font-size: 12px; color: var(--fg); opacity: 0.9; margin-top: 4px; line-height: 1.35; }
+.toast.confirm .cs-why em { font-style: normal; font-weight: 800; letter-spacing: 0.12em; color: var(--yellow); margin-right: 4px; }
 .toast.pinned::after { content: ' 📌'; opacity: 0.6; }
 .toast.status { border-color: var(--accent); color: var(--fg); }
 .toast.status b { color: var(--accent); letter-spacing: 0.1em; font-size: 11px; display: block; margin-bottom: 2px; }
@@ -189,6 +217,8 @@ a { color: var(--accent); }
 #labels .label.liqtag.it { border-color: #ff6b6b; color: #ffb3b3; }
 .rear-strip { position: absolute; left: 30%; right: 30%; top: 14%; height: 32%; border: 0; pointer-events: none; }
 .rear-strip span { position: absolute; left: 10px; top: 6px; font: 10px var(--mono); letter-spacing: 0.2em; color: var(--muted); }
+.rear-strip .rear-grip { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; pointer-events: auto; border-right: 2px solid rgba(255,255,255,0.35); border-bottom: 2px solid rgba(255,255,255,0.35); border-radius: 0 0 4px 0; }
+.rear-strip .rear-grip:hover { border-color: rgba(255,255,255,0.8); }
 #hud.caught { animation: caught 0.5s ease-in-out infinite alternate; }
 #hud.tags-faded .pricepod { opacity: 0.45; }
 /* Update 18: the order ticket */
@@ -504,6 +534,22 @@ a { color: var(--accent); }
 /* ---------------- Update 11 ---------------- */
 .hud-menu { position: absolute; right: 0; top: 30px; display: flex; flex-direction: column; gap: 4px; padding: 6px; z-index: 25; min-width: 160px; }
 .hud-menu button { text-align: left; }
+.hud-menu .menu-sec { font: 10px var(--mono); letter-spacing: 0.2em; color: var(--muted); padding: 8px 6px 2px; border-top: 1px solid var(--panel-border); margin-top: 4px; }
+/* Update 27: a toggle button is blue while its panel is open, so a second tap reads as "close" */
+.hud-buttons button.on, .hud-menu button.on { outline: 1px solid var(--accent); background: rgba(46,230,255,0.14); color: var(--fg); }
+.hud-menu button.on::before { content: '✓ '; color: var(--accent); }
+.pclose { position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; padding: 0; font: 11px var(--mono); line-height: 18px; border-radius: 4px; border: 0; background: rgba(255,255,255,0.08); color: var(--muted); z-index: 2; pointer-events: auto; }
+.pclose:hover { background: rgba(255,255,255,0.25); color: var(--fg); }
+.headway, .mirror { position: relative; }
+#hud.no-chips .hud-top .chips, #hud.no-pod .pricepod, #hud.no-headway .headway, #hud.no-mirror .mirror, #hud.no-tiles .hud-bottom { display: none !important; }
+#stage.no-music > #music { display: none !important; }
+/* Update 27: draggable panels */
+.hud-bottom, .pedals { position: relative; }
+.drag-handle { position: absolute; left: 2px; top: 2px; font: 11px var(--mono); line-height: 1; color: var(--muted); opacity: 0.45; cursor: move; padding: 2px 3px; border-radius: 4px; pointer-events: auto; z-index: 3; user-select: none; }
+.drag-handle:hover { opacity: 1; background: rgba(255,255,255,0.12); }
+#hud > .floating { position: absolute !important; right: auto !important; bottom: auto !important; transform: none !important; margin: 0 !important; z-index: 7; }
+#hud > .floating.pricepod { pointer-events: auto; }
+@media (max-width: 820px) { .drag-handle { display: none; } }
 .chip.price { font-weight: 800; font-size: 14px; color: var(--c-neutral); }
 #hud.pod-corner .pricepod { display: none; }
 #labels .label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }

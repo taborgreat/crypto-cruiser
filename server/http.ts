@@ -11,7 +11,9 @@ import { PEDAL_ACTIONS } from '../shared/types.js';
 import { CANDLE_INTERVALS } from '../shared/candles.js';
 import { collapseBatch } from '../shared/batch.js';
 import { ENV } from './config.js';
-import type { Session } from './session.js';
+import { Session } from './session.js';
+import { Auth, type Login } from './auth.js';
+import type { MarketHub } from './market.js';
 import { log } from './log.js';
 
 const FLUSH_MS = 16;
@@ -40,11 +42,59 @@ function send(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(text);
 }
 
-export function createServer(session: Session): http.Server {
+/** Update 27: one Session per login cookie, created on first use, retired after a long idle. */
+export class SessionManager {
+  private sessions = new Map<string, Promise<Session>>();
+  private gcTimer: NodeJS.Timeout;
+
+  constructor(private hub: MarketHub) {
+    this.gcTimer = setInterval(() => this.gc(), 60_000);
+  }
+
+  for(login: Login): Promise<Session> {
+    let p = this.sessions.get(login.sid);
+    if (!p) {
+      const dir = path.join(ENV.dataDir, 'sessions', login.sid);
+      const s = new Session(this.hub, login.sid, dir);
+      log.info('session', `new session ${login.sid.slice(0, 8)} for ${login.user}`);
+      p = s.start().then(() => s).catch((err) => { this.sessions.delete(login.sid); throw err; });
+      this.sessions.set(login.sid, p);
+    }
+    return p;
+  }
+
+  /** A session with no browser for 30 min and nothing running is shut down; its market core follows. */
+  private gc(): void {
+    const now = Date.now();
+    for (const [sid, p] of this.sessions) {
+      void p.then((s) => {
+        if (s.clients > 0 || now - s.idleSince < SESSION_IDLE_MS) return;
+        if (s.paper.position || s.engine.position || s.status().wallets.some((w) => w.position)) return;
+        this.sessions.delete(sid);
+        s.shutdown();
+        log.info('session', `retired idle session ${sid.slice(0, 8)}`);
+      }).catch(() => undefined);
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    clearInterval(this.gcTimer);
+    for (const p of this.sessions.values()) await p.then((s) => s.shutdown()).catch(() => undefined);
+    this.sessions.clear();
+  }
+}
+
+const SESSION_IDLE_MS = 30 * 60_000;
+
+export function createServer(sessions: SessionManager, auth: Auth): http.Server {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     try {
+      if (url.pathname === '/login' && req.method === 'POST') { await auth.loginForm(req, res); return; }
+      const login = auth.http(req, res);
+      if (!login) return;
       if (url.pathname.startsWith('/api/')) {
+        const session = await sessions.for(login);
         await handleApi(session, req, res, url);
         return;
       }
@@ -55,28 +105,55 @@ export function createServer(session: Session): http.Server {
     }
   });
 
-  const wss = new WebSocketServer({ server, path: '/ws' });
-  wss.on('connection', (ws) => {
-    const hello: ServerMsg[] = [{ type: 'hello', serverTime: Date.now() }, { type: 'status', status: session.status() }];
-    if (session.lastFrame) hello.push({ type: 'frame', frame: session.lastFrame });
-    ws.send(JSON.stringify(hello));
-  });
-  // one message per animation frame
-  let queue: ServerMsg[] = [];
-  let timer: NodeJS.Timeout | null = null;
-  const flush = () => {
-    timer = null;
-    if (!queue.length) return;
-    const msgs = collapseBatch(queue);
-    queue = [];
-    const text = JSON.stringify(msgs);
-    for (const c of wss.clients) if (c.readyState === WebSocket.OPEN) c.send(text);
+  // The websocket: one hub per session. Each session queues its own messages and flushes once per ~16 ms.
+  const wss = new WebSocketServer({ noServer: true });
+  const clientsOf = new Map<Session, Set<WebSocket>>();
+  const wire = (session: Session): Set<WebSocket> => {
+    let set = clientsOf.get(session);
+    if (set) return set;
+    set = new Set<WebSocket>();
+    clientsOf.set(session, set);
+    let queue: ServerMsg[] = [];
+    let timer: NodeJS.Timeout | null = null;
+    const flush = () => {
+      timer = null;
+      if (!queue.length) return;
+      const msgs = collapseBatch(queue);
+      queue = [];
+      const text = JSON.stringify(msgs);
+      for (const c of set!) if (c.readyState === WebSocket.OPEN) c.send(text);
+    };
+    session.on('msg', (msg: ServerMsg) => {
+      if (!set!.size) { queue = []; return; }
+      queue.push(msg);
+      if (!timer) timer = setTimeout(flush, FLUSH_MS);
+    });
+    const status = setInterval(() => { if (set!.size) session.broadcastStatus(true); }, 2000);
+    session.once('shutdown', () => { clearInterval(status); clientsOf.delete(session); for (const c of set!) c.close(); });
+    return set;
   };
-  session.on('msg', (msg: ServerMsg) => {
-    queue.push(msg);
-    if (!timer) timer = setTimeout(flush, FLUSH_MS);
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (url.pathname !== '/ws') { socket.destroy(); return; }
+    const login = auth.upgrade(req);
+    if (!login) { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); socket.destroy(); return; }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      sessions.for(login).then((session) => {
+        const set = wire(session);
+        set.add(ws);
+        session.clients = set.size;
+        session.idleSince = 0;
+        const hello: ServerMsg[] = [{ type: 'hello', serverTime: Date.now() }, { type: 'status', status: session.status() }];
+        if (session.lastFrame) hello.push({ type: 'frame', frame: session.lastFrame });
+        ws.send(JSON.stringify(hello));
+        ws.on('close', () => {
+          set.delete(ws);
+          session.clients = set.size;
+          if (!set.size) session.idleSince = Date.now();
+        });
+      }).catch((err) => { log.error('ws', (err as Error).message); ws.close(); });
+    });
   });
-  setInterval(() => session.broadcastStatus(true), 2000);
   return server;
 }
 

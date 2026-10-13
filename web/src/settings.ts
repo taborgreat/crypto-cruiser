@@ -86,6 +86,8 @@ export class SettingsPanel {
         <label for="vis_labelAll">Label every object (L)</label><input id="vis_labelAll" type="checkbox">
         <label for="vis_chartOpen">Bridge chart drawer open (B)</label><input id="vis_chartOpen" type="checkbox">
         <label for="vis_chartHeight">Chart drawer height (px)</label><input id="vis_chartHeight" type="number" min="100" max="600" step="10">
+        <label for="vis_rearH">Rear view height (% of screen)<small>the CHASE strip behind you; or drag its bottom-right corner</small></label><input id="vis_rearH" type="number" min="10" max="80" step="1">
+        <label for="vis_rearW">Rear view width (% of screen)</label><input id="vis_rearW" type="number" min="15" max="100" step="1">
       </div>
       <h4>PRACTICE</h4>
       <div class="ctl-row"><button id="setResetPaper">Reset practice bankroll</button><span style="color:var(--muted);font-size:12px">closes nothing; only when no position is open</span></div>
@@ -121,6 +123,8 @@ export class SettingsPanel {
     vis('vis_effects').addEventListener('change', (e) => this.store.setVisual({ effects: Math.min(1, Math.max(0, Number((e.target as HTMLInputElement).value))) }));
     vis('vis_labelAll').addEventListener('change', (e) => this.store.setVisual({ labelAll: (e.target as HTMLInputElement).checked }));
     vis('vis_chartOpen').addEventListener('change', (e) => this.store.setVisual({ chartOpen: (e.target as HTMLInputElement).checked }));
+    vis('vis_rearH').addEventListener('change', (e) => this.store.setVisual({ rearH: Math.min(0.8, Math.max(0.1, (Number((e.target as HTMLInputElement).value) || 32) / 100)) }));
+    vis('vis_rearW').addEventListener('change', (e) => this.store.setVisual({ rearW: Math.min(1, Math.max(0.15, (Number((e.target as HTMLInputElement).value) || 40) / 100)) }));
     vis('vis_chartHeight').addEventListener('change', (e) => this.store.setVisual({ chartHeight: Math.min(600, Math.max(100, Number((e.target as HTMLInputElement).value) || 160)) }));
     root.querySelector('#setResetPaper')!.addEventListener('click', () => void api.paperReset().catch(() => undefined));
   }
@@ -175,6 +179,8 @@ export class SettingsPanel {
     setIfIdle('vis_musicVolume', String(v.musicVolume));
     setIfIdle('vis_effects', String(v.effects));
     setIfIdle('vis_chartHeight', String(v.chartHeight));
+    setIfIdle('vis_rearH', String(Math.round(v.rearH * 100)));
+    setIfIdle('vis_rearW', String(Math.round(v.rearW * 100)));
     (q('vis_topDown') as HTMLInputElement).checked = v.topDown;
     (q('vis_poles') as HTMLInputElement).checked = v.poles;
     (q('vis_crowd') as HTMLInputElement).checked = v.crowd;

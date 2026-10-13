@@ -1,6 +1,23 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_SETTINGS, type Settings } from '../shared/types.js';
 import { clampH } from '../shared/horizon.js';
+
+// Update 27: `.env` in the working directory is read here, so the login (AUTH_USERS) and the rest apply however
+// the server is started (npm run dev, npm start, systemd). Variables already in the environment win.
+try {
+  const text = fs.readFileSync(path.resolve(process.cwd(), '.env'), 'utf8');
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const i = line.indexOf('=');
+    if (i <= 0) continue;
+    const key = line.slice(0, i).trim();
+    let val = line.slice(i + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
+    if (process.env[key] === undefined) process.env[key] = val;
+  }
+} catch { /* no .env: environment only */ }
 
 function wsFromHttp(url: string): string {
   return url.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');

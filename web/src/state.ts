@@ -4,7 +4,8 @@ import type { HoverHit, Trail } from './renderer.js';
 export interface VisualSettings {
   renderer: '2d' | '3d';
   camera: 'chase' | 'driver';
-  topDown: boolean;     // Update 8: bird's-eye in PREVIEW (V toggles)
+  topDown: boolean;
+  topDownDrive: boolean; // Update 27: V while driving: bird's-eye of the real car (3D) / auto-fit gap scale (2D)     // Update 8: bird's-eye in PREVIEW (V toggles)
   bothSides: boolean;   // Update 8: LONG lanes left, SHORT lanes right in the preview
   quality: 'high' | 'low'; // Update 9 §D
   speedScale: number;   // K_scroll base: road m/s per cl/s = speedScale × gapScale (× 60/H)
@@ -30,6 +31,11 @@ export interface VisualSettings {
   poles: boolean;       // Update 19: the roadside poles that scroll at your speed (off: they read as noise)
   crowd: boolean;       // Update 20: the other cars change lanes on real trades
   mirrorHeight: number; // Update 21: the mirror panel's canvas, px (drag its grip)
+  rearH: number;        // Update 27: the CHASE rear-view strip, height as a fraction of the stage (drag its corner)
+  rearW: number;        // Update 27: ... and width
+  zen: boolean;         // Update 27: only the road and the pedals
+  panelPos: Record<string, { x: number; y: number }>; // Update 27: panels dragged somewhere (fractions of the stage)
+  hidden: string[];     // Update 27: panels switched off from the PANELS menu or their ✕ (headway, mirror, pod, tiles, chips, music)
   traffic: boolean;     // Update 21: the other cars at all (off: only you and the car in front)
   hoverAll: boolean;    // Update 23: hovers on the road, hills, fog, poles and plain traffic (off: main objects only)
 }
@@ -38,6 +44,7 @@ export const DEFAULT_VISUAL: VisualSettings = {
   renderer: '3d',
   camera: 'chase',
   topDown: true,
+  topDownDrive: false,
   bothSides: true,
   quality: 'high',
   speedScale: 8,
@@ -63,6 +70,11 @@ export const DEFAULT_VISUAL: VisualSettings = {
   poles: false,
   crowd: true,
   mirrorHeight: 96,
+  rearH: 0.32,
+  rearW: 0.4,
+  zen: false,
+  hidden: [],
+  panelPos: {},
   traffic: true,
   hoverAll: false,
 };
@@ -197,9 +209,14 @@ function loadVisual(): VisualSettings {
       if (!v.tagsChosen) v.tags = 'side';
       if (!(v.topZoom > 0)) v.topZoom = 1;
       if (!(v.mirrorHeight >= 48)) v.mirrorHeight = 96;
+      if (!(v.rearH >= 0.1 && v.rearH <= 0.8)) v.rearH = 0.32;
+      if (!(v.rearW >= 0.15 && v.rearW <= 1)) v.rearW = 0.4;
+      if (!Array.isArray(v.hidden)) v.hidden = [];
+      if (!v.panelPos || typeof v.panelPos !== 'object') v.panelPos = {};
       // Update 21: every load starts in 3D, in CHASE, with the camera just behind the car
       v.renderer = '3d';
       v.chase = true;
+      v.topDownDrive = false;
       v.orbit = { ...DEFAULT_VISUAL.orbit };
       return v;
     }

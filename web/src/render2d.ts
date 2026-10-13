@@ -27,6 +27,7 @@ export class Render2D implements Renderer {
   private active = false;
   private hits: Hit[] = [];
   private lookT = 0;
+  private fitUnit = 0; // Update 27: the drive's auto-fit scale (px per gap unit), 0 = off
   private info: TopInfo | null = null;
 
   constructor() {
@@ -107,8 +108,15 @@ export class Render2D implements Renderer {
     this.hits = [];
     this.info = null;
     const pxPerM = h / 140;                   // 140 m of road fits the screen height (driver seat)
-    const unit = o.gapScale * pxPerM;         // px per car length (gap unit)
+    let unit = o.gapScale * pxPerM;           // px per car length (gap unit)
     const top = o.topDown && !f?.car;
+    // Update 27: V while driving: the scale fits the gap, so the car ahead sits near the top whatever the distance and
+    // every inch of closing shows (smoothed so it does not jitter with the tape)
+    if (o.topDown && f?.car) {
+      const want = clamp((h * 0.72 - 90) / Math.max(0.02, animGap(f.car, f, o.anim)), unit, unit * 60);
+      this.fitUnit = this.fitUnit > 0 ? lerp(this.fitUnit, want, clamp(dt / 1.5, 0, 1)) : want;
+      unit = this.fitUnit;
+    } else this.fitUnit = 0;
     // Update 14: only the drawn lanes take room in the bird's-eye view, packed from the divider outward
     const shown = f ? f.ghosts.filter((g) => f.rewind !== null || o.visible.has(g.id)) : [];
     const pack = packTopLanes(shown, o.bothSides, !!f?.rewind);
