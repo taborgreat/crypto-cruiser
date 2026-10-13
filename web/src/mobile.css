@@ -1,0 +1,50 @@
+/* Update 14: phones and narrow windows. No redesign: everything that overlays the road on a desktop becomes a
+   full-width block in document order, and the page scrolls. The road keeps a fixed height at the top of the
+   stage; labels stay over it. Selectors carry #stage / #app so they beat every desktop rule. */
+@media (max-width: 820px) {
+  html, body { height: auto; overflow: auto; -webkit-text-size-adjust: 100%; }
+  #app { position: static; display: block; min-height: 100vh; }
+  #app > #start { flex: none; width: auto; max-width: none; height: auto; overflow: visible; border-right: 0; border-bottom: 1px solid var(--panel-border); padding: 10px 12px 14px; }
+  #app > #stage { position: relative; display: block; height: auto; --drawer-h: 0px !important; --hud-bottom-h: 0px !important; --vp-h: clamp(240px, 56vh, 560px); }
+  #stage > #viewport { position: relative; inset: auto; height: var(--vp-h); }
+  #stage > #labels { position: absolute; left: 0; right: 0; top: 0; bottom: auto; height: var(--vp-h); }
+
+  /* the HUD: a column of rows instead of overlays */
+  #stage > #hud { position: static; display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 12px; pointer-events: auto; }
+  #stage #hud .hud-top, #stage #hud .pricepod, #stage #hud .hud-right, #stage #hud .scalebar, #stage #hud .dash-numbers,
+  #stage #hud .hud-stack, #stage #hud .exits-panel, #stage #hud .toasts {
+    position: static; transform: none; left: auto; right: auto; top: auto; bottom: auto; width: auto; max-width: none; min-width: 0; margin: 0;
+  }
+  #stage #hud .hud-top { display: flex; flex-wrap: wrap; gap: 6px; }
+  #stage #hud .chips { overflow-x: auto; overflow-y: visible; padding-bottom: 2px; }
+  #stage #hud .pricepod { display: revert; pointer-events: auto; padding: 8px 12px; }
+  #stage #hud .pricepod .pp-main { font-size: 40px; }
+  #stage #hud .hud-right { display: flex; flex-direction: column; gap: 8px; }
+  #stage #hud .mirror, #stage #hud .dash-numbers, #stage #hud .scalebar { display: revert; }
+  #stage #hud .hud-stack { display: flex; flex-direction: column; gap: 8px; }
+  #stage #hud .hud-bottom { flex-wrap: wrap; align-items: stretch; gap: 8px; }
+  #stage #hud .speedo { flex: 1 1 100%; max-width: none; }
+  #stage #hud .hud-bottom .readout { flex: 1 1 46%; min-width: 0; }
+  #stage #hud .pedals { height: auto; flex-wrap: wrap; gap: 8px; }
+  #stage #hud .pedal { flex: 1 1 30%; min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 14px; }
+  #stage #hud .toasts { position: fixed; top: 8px; left: 8px; right: 8px; z-index: 30; }
+  #stage #hud .banner { position: fixed; left: 50%; top: 30%; transform: translate(-50%, -50%); width: min(92vw, 420px); padding: 16px 20px; z-index: 35; }
+  #stage #hud .banner h2 { font-size: 26px; }
+  #stage #hud .live-border { position: fixed; inset: 0; z-index: 29; }
+  #stage #hud .help { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(600px, 92vw); max-height: 90vh; z-index: 36; }
+
+  /* the chart is a block of its own height; music and overlays leave the stage */
+  #stage > #chart { position: static; height: auto; min-height: 0; }
+  #stage > #chart:not(.collapsed) .chart-body { height: 240px; flex: none; }
+  #stage > #music { position: static; max-width: none; margin: 4px 10px; }
+  #app #tooltip { position: fixed; max-width: 92vw; }
+  #app #modal, #app #results, #stage #results { position: fixed; inset: 0; }
+  #app .panel { position: fixed; top: 8px; left: 3vw; right: 3vw; width: auto; max-height: 92vh; }
+
+  /* touch targets */
+  .readout.secondary { display: none; }
+  .lane-row { font-size: 12px; padding: 7px 8px; }
+  .chip { padding: 7px 9px; font-size: 12px; }
+  #start button, #start .seg button { min-height: 36px; }
+  #start input[type=range] { height: 28px; }
+}

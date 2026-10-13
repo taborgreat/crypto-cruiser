@@ -1,0 +1,44 @@
+/* Update 9 §C: one theme. One accent colour per meaning, everywhere:
+   red = toward liquidation / loss, green = away / profit, yellow = entry, blue = stop, white = neutral.
+   Panels share one style: 12 px radius, 1 px border at 20% white, 70% black fill, blur 8 px.
+   Type: headline 28 px, support 12 px, labels 10 px uppercase tracked; tabular figures so digits do not jitter. */
+:root {
+  --bg: #06040f;
+  --fg: #e6e4f5;
+  --muted: #9a93b8;
+
+  --c-liq: #ff3b3b;       /* toward liquidation, loss */
+  --c-away: #35d07f;      /* away from liquidation, profit */
+  --c-entry: #ffd23f;     /* entry */
+  --c-stop: #4c9bff;      /* trailing stop */
+  --c-neutral: #ffffff;   /* me, the mark */
+  --c-warn: #ff8a3d;      /* orange headway band */
+  --c-long: #5ee0c8;
+  --c-short: #ff3fa4;
+  --c-accent: #2ee6ff;    /* UI chrome only */
+  --c-live: #ff2d2d;
+
+  /* legacy aliases used across the stylesheet */
+  --red: var(--c-liq);
+  --green: var(--c-away);
+  --yellow: var(--c-entry);
+  --blue: var(--c-stop);
+  --orange: var(--c-warn);
+  --accent: var(--c-accent);
+  --live: var(--c-live);
+  --long: var(--c-long);
+  --short: var(--c-short);
+
+  --panel-fill: rgba(0, 0, 0, 0.70);
+  --panel-border: rgba(255, 255, 255, 0.20);
+  --panel-radius: 12px;
+  --panel-blur: 8px;
+  --panel: var(--panel-fill);
+
+  --fs-headline: 28px;
+  --fs-support: 12px;
+  --fs-label: 10px;
+
+  --mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace;
+  --sans: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
