@@ -368,3 +368,116 @@ server log prints, port 5173.
   "swap … USDC → SOL" button when there is at least $0.50; it asks Jupiter Ultra for an order, signs it
   with the trading wallet and lets Jupiter land it. Instant-signing wallets only; with Phantom, swap on
   jup.ag.
+
+## The camera, and the dashes (Update 14)
+
+- **The dashes ran backwards.** The road plane is rotated −90° about X, so the texture's v axis grows away
+  from the camera; the scroll offset had the wrong sign and sent the lane dashes forward while the poles
+  came toward you. Fixed, and the road no longer reverses on a favourable tick (the scroll speed is floored
+  at zero).
+- **Orbit camera.** The camera is anchored to a point above your car. The mouse wheel zooms from a high,
+  far chase all the way in to first person (closer than 1.6 m your own car is not drawn); a plain drag
+  orbits (right moves round to the right, up raises the camera); double-click resets; K jumps between
+  first person and the home chase. The chase / driver setting and its HUD button are gone. In PREVIEW the
+  limit entry is now scrubbed with shift-drag (or the chart, or [ ]). The camera is remembered.
+- **Tags.** The tags above the cars cycle with the "tags" button: on, faded, parked in a column at the right
+  edge, or off. Hover still works in every mode.
+
+## Pedals are the driver only; the market is motion (Update 15)
+
+The THROTTLE and BRAKE bars moved with no input: the Update 3 market impulse was folded into the pedal
+values, so the tape's push read as auto-gas and auto-brake, and the motion it should have put into the
+seat went into a little bar instead. Split:
+
+- `throttle` and `brake` on the car frame are the driver's pedals only (a press, decaying over about a
+  second). Hands off, they read zero. The smoke run checks this on a live tape.
+- `impulse` is a new signed −1..1 figure: `−v_gap_impulse / 0.05`, so a tick against you is a positive
+  surge and a tick for you a negative drag. It is the single source for the camera pitch, the FOV, the nose
+  of your car and its brake lights, and the engine note (up on a surge, down on a drag). The road speed
+  already carried it through `v_you`. Nothing downstream reads the pedal values any more.
+- Under the dial, "price · trend" became `market: pushing you +0.04%/s` / `market: easing −0.02%/s`
+  / `market: steady`, with the trend and the liquidation drift after it.
+- The dial shows the effective leverage big and, when it differs, the leverage the position was opened at
+  small: `131.0x · effective · 250× set`. A changed effective leverage (fees, added collateral, the price
+  moving) is a fact, not a glitch.
+
+## Update 16: zoom from above, quiet, a steady clock, and CHASE
+
+- **The bird's-eye zooms.** The wheel zooms the top-down view in and out (0.3× to 4×); the dollar scale
+  follows and is remembered.
+- **Quiet.** The tyre hiss plays only while a position is on the road, at a tenth of its old level. A
+  speaker button in the top row mutes everything: engine, hiss, roar and music.
+- **"driver seat" is now "drive"** on the button and in the help.
+- **A steady time to liquidation.** It ran on the tick-to-tick closing speed, which crosses zero every few
+  seconds, so the panel flipped between 12 s and hours. It now runs on the trend plus the liquidation
+  drift, and the figure is smoothed in log space with a 2.5 s time constant per car; "not closing" enters
+  the average as four hours so one flip cannot snap it. Projected time, the colour and the history strip
+  all follow the same figure.
+- **CHASE mode** (K, or the "chase" button): Kade's model. The same position, every number identical; only
+  where it is drawn changes. The car in front becomes a **monster behind you**: its distance is your
+  distance to liquidation, its gaining is your closing speed, time until it catches you is the headway.
+  It lives in a **mirror strip** near the top of the screen (a second camera above your car looking back),
+  looms as it gains, its eyes brighten when the trend turns against you, and it **roars** louder the
+  closer it gets; when time is red the screen edges pulse. The road ahead is open: distance is the score.
+  The entry line keeps its meaning; the trailing stop is a **wall ahead** that you choose to hit. Lanes
+  work the same, one monster each; top-down and rewind are unchanged. The panel reads TIME UNTIL CAUGHT
+  and DISTANCE AHEAD OF IT. The impulse still moves your car, the trend moves the monster.
+
+## Update 17: details
+
+- **Zoom keeps the spacing.** The bird's-eye dollar scale is fixed at zoom 1, so the wheel adds road around
+  the cars instead of re-spacing them.
+- **Side tags on the left**, since the right is the panels' column; "faded" also fades the price.
+- **The chaser is a police car**: white, a red and blue light bar on the roof that alternates and brightens
+  the more it is gaining and the trend turns against you, headlights facing you.
+- **The chart opens tight**: ±0.4 % of the mark (about a dollar on SOL), widened only to keep the
+  liquidation and entry lines and the last twenty bars in view, never beyond ±1.5 %.
+- **Every pedal and every state-changing hotkey needs a second push** (Enter, M, N, V, Shift+V, 2, 3, K, R;
+  pedals in practice too): the first press says "push again to confirm". A stray key does nothing.
+- **The rear-view is a rectangle** in the middle: 30 % margins each side.
+- **TRADES page** (⋯ menu or the "full page" button on Recent trades): every trade of a wallet — the practice
+  engine, the connected wallet, the trading wallet or any address — with net after fees, win rate, fees,
+  volume, liquidations, best and worst, the split by side and market, the best and worst hour of day, a
+  cumulative P&L chart, a P&L-per-close chart and the full table with Solscan links. Live rows now carry
+  P&L after fees like the practice records.
+- **CONDITIONS page** (⋯ menu or the button under the panel): the sentence and reason big, a card per
+  horizon with a sparkline of its closes (EMA in purple, the window's range shaded), every figure behind the
+  grid, and the rule stack that decides the sentence. Refreshes every 5 s while open.
+- Both pages take over the stage; X, the same button again, or Esc closes them. The drive keeps running.
+
+## Update 18: the ticket, the confirm sheet, a usable clock, the guide
+
+- **The order ticket.** Side, market, what you pay, size, leverage, entry and the fees now sit in one framed
+  card, red-edged for SHORT and green for LONG, headed PLACE A POSITION. The horizon knob moved below it,
+  after the fees; the lanes and the conditions follow.
+- **REAL confirm sheet.** The red frame around the screen is gone. Instead, Go in REAL opens a sheet that
+  says exactly what is about to be placed: ▲ LONG in green or ▼ SHORT in red, what you pay, the size and
+  leverage, the entry, the liquidation price and how far it is, the fees. PLACE or cancel.
+- **Time to liquidation** was jittery on the tick-to-tick speed and mute ("not closing") on the pure trend.
+  It now uses a closing speed smoothed over about 4 s, the trend when that closes faster, then the time
+  smoothed in log space. A number most of the time, no flicker, "not closing" only when nothing closes.
+- **The seat draws the same lanes as the bird's-eye**, both sides side by side, packed from the divider; the
+  road is as many lanes wide as are drawn. "All lanes" now shows all eight in the seat too. In the bird's-eye,
+  if the outer lanes seem missing, the wheel has zoomed in: zoom out.
+- **Tags** park at the side by default (left, since the right is the panels'); the chaser's tag is red, not
+  pink; "faded" is a touch brighter. The mirror strip no longer has a frame.
+- **The chase button names the mode you are in**: TRAFFIC or CHASE.
+- **Lanes survive a server restart**: the browser re-pushes them when the socket reconnects, and a failed push
+  retries quietly instead of a red toast. (The "every 30 s" resets were the server restarting on each code
+  change while you drove.)
+- **The conditions guide**: the CONDITIONS page opens with BIAS, THE READ (a plain sentence per horizon, in
+  three groups), SIGNALS (each with a clear sign and colour), RISK AT N× (your room to liquidation against a
+  normal move on each horizon) and WATCH (the levels that change the read), above the cards and the rules.
+
+## Update 19: more details
+
+- **Side tags** are never pushed off the bottom and may be wider, so they are not cut off.
+- **Roadside poles** (the T-shaped lights) are off by default; a setting turns them on.
+- **The entry line is white**, drawn on the road under the car instead of through it; its tag is white too.
+- **The panel order**: the ticket, the horizon, then GO right under it; the lanes; two big buttons side by
+  side, CONDITIONS and TRADES, that open the pages; then the inline conditions, rewind and the recent trades.
+- **"Only mine"** in the lane table header draws only the focused lane. The focused lane's car is solid with
+  a cyan edge and a "YOU · price" tag; the other lanes are ghosted in their lane colour.
+- **The horizon from inside the drive**: click the H chip in the top row for the presets or auto.
+- **CHASE from above**: the bird's-eye now draws the police car in place of the car in front, so switching
+  modes is visible there too; in the seat it is behind you as before.

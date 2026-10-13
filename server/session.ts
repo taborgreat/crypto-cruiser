@@ -6,11 +6,12 @@
 // ages, the headway thresholds and the render scale; the CLEAR tag.
 // Update 7: the rewind drive and the road behind you (price profile, crash posts, flags).
 import { EventEmitter } from 'node:events';
-import { MarketKinematics, carKinematics, headwayColor, type MarketState } from '../shared/kinematics.js';
+import { MarketKinematics, carKinematics, headway, headwayColor, projectedHeadway, type MarketState } from '../shared/kinematics.js';
 import { pnlUsd } from '../shared/jupiter.js';
 import { buildReadout } from '../shared/readout.js';
 import { agoSpan } from '../shared/format.js';
 import { previewPosition } from '../shared/preview.js';
+import { marketImpulse } from '../shared/kinematics.js';
 import { swapUsdcToSol } from './swap.js';
 import { autoRoomTarget, autoVolMultiplier, clampH, deriveHorizon } from '../shared/horizon.js';
 import {
@@ -27,14 +28,13 @@ import { LiveEngine } from './engine/live.js';
 import type { Engine, EngineEvent, PedalResult } from './engine/types.js';
 import { Rewind } from './rewind.js';
 import { ConditionsEngine } from './conditions.js';
+import type { ConditionsState } from '../shared/conditions.js';
 import { exitHit } from '../shared/exits.js';
 import { TradingWallet } from './trading.js';
 import { log } from './log.js';
 
 const num = (x: number): number | null => (Number.isFinite(x) ? x : null);
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
-/** Car lengths / s of impulse that reads as a full throttle / brake needle. */
-const IMPULSE_FULL = 0.05;
 const CRASH_RESPAWN_MS = 2000;
 const ANIM_BROADCAST_MS = 50;
 
@@ -70,6 +70,8 @@ export class Session extends EventEmitter {
   private lastTickAt = 0;
   private pedalInput = { throttle: 0, brake: 0, t: 0 };
   private liqTrack: { key: string; liq: number; t: number; rate: number } | null = null;
+  /** Update 16: time to liquidation smoothed in log space (τ 2.5 s) per car, so the panel stops flickering. */
+  private hwSmooth = new Map<string, { t: number; lh: number | null; lp: number | null; v: number }>();
   // horizon
   private hEff: number;
   private gapAtEntry: { key: string; gap: number } | null = null;
@@ -274,7 +276,33 @@ export class Session extends EventEmitter {
     return tr.rate;
   }
 
-  private buildCar(p: PositionState, price: number, pAnim: number, m: MarketState, layers: Layers, t: number, real: boolean): CarFrame {
+  /**
+   * Update 18: time to liquidation from a closing speed smoothed over ~4 s (the tick-to-tick speed flickered; the
+   * pure trend said "not closing" too often). The trend wins when it closes faster. The time is then smoothed in
+   * log space (τ 1.5 s); "not closing" only when neither the smoothed speed nor the trend closes.
+   */
+  private smoothHeadway(key: string, t: number, gap: number, vClose: number, vCloseTrend: number, aClose: number): [number, number] {
+    const st = this.hwSmooth.get(key) ?? { t, lh: null, lp: null, v: vClose };
+    const dt = Math.max(0, (t - st.t) / 1000);
+    st.t = t;
+    st.v += (1 - Math.exp(-dt / 4)) * (vClose - st.v);
+    const v = Math.max(st.v, vCloseTrend);
+    const hw = headway(gap, v);
+    const hp = projectedHeadway(gap, v, aClose);
+    const a = 1 - Math.exp(-dt / 1.5);
+    const FAR = 4 * 3600; // "not closing" enters the average as four hours, so one flip does not snap the number
+    const sm = (prev: number | null, x: number): number => {
+      const l = Math.log(Math.max(0.1, Number.isFinite(x) ? x : FAR));
+      return prev === null ? l : prev + a * (l - prev);
+    };
+    st.lh = sm(st.lh, hw);
+    st.lp = sm(st.lp, hp);
+    this.hwSmooth.set(key, st);
+    const out = (l: number): number => { const v = Math.exp(l); return v >= FAR * 0.5 ? Infinity : v; };
+    return [out(st.lh), out(st.lp)];
+  }
+
+  private buildCar(p: PositionState, price: number, pAnim: number, m: MarketState, layers: Layers, t: number, real: boolean, key = real ? 'car' : 'ghost'): CarFrame {
     const s = this.settings;
     const k = carKinematics({
       side: p.side, leverage: p.leverage, price, entry: p.entry, liq: p.liq,
@@ -285,16 +313,19 @@ export class Session extends EventEmitter {
     const fees = p.borrowFeeUsd + p.closeFeeUsd;
     const stopDist = p.trailingStop ? (p.side * (price - p.trailingStop.price) / price) * p.leverage : null;
     const decay = real ? Math.exp(-Math.max(0, t - this.pedalInput.t) / 1200) : 0;
-    const throttle = clamp01(this.pedalInput.throttle * decay + Math.max(0, -k.v_gap_impulse) / IMPULSE_FULL);
-    const brake = clamp01(this.pedalInput.brake * decay + Math.max(0, k.v_gap_impulse) / IMPULSE_FULL);
+    // Update 15: the bars are the driver's pedals only; the market's push is `impulse` and becomes motion
+    const throttle = clamp01(this.pedalInput.throttle * decay);
+    const brake = clamp01(this.pedalInput.brake * decay);
+    const impulse = marketImpulse(k.v_gap_impulse);
     const gapAnim = pAnim > 0 ? p.leverage * ((p.side * (pAnim - p.liq)) / pAnim) : k.gap;
+    const [hwS, hpS] = this.smoothHeadway(key, t, k.gap, k.v_close, -(k.v_gap_trend + k.v_gap_liq), -k.a_gap_trend);
     return {
       side: p.side, entry: p.entry, liq: p.liq, leverage: p.leverage,
       gap: k.gap, gap_pct: k.gap_pct, v_gap: k.v_gap, v_close: k.v_close, a_gap: k.a_gap,
-      headway_s: num(k.headway_s), headway_proj_s: num(k.headway_proj_s),
+      headway_s: num(hwS), headway_proj_s: num(hpS),
       v_road: k.v_road, v_you: k.v_you, v_ahead: k.v_ahead,
       v_gap_trend: k.v_gap_trend, v_gap_impulse: k.v_gap_impulse, v_gap_liq: k.v_gap_liq,
-      brake_ahead: k.brake_ahead, slam: k.slam, lurch: k.lurch, gap_anim: gapAnim, throttle, brake,
+      brake_ahead: k.brake_ahead, slam: k.slam, lurch: k.lurch, gap_anim: gapAnim, throttle, brake, impulse,
       pnl_pct: k.fav * p.leverage * 100, pnl_usd: pnl, fees_usd: fees,
       size_usd: p.sizeUsd, collateral_usd: p.collateralUsd,
       free_collateral: this.engine.freeCollateralUsd(),
@@ -317,7 +348,7 @@ export class Session extends EventEmitter {
       entry = this.feed.history.priceAt(tEntry) ?? price;
     }
     const prev = previewPosition(this.market, { side: g.side, leverage: g.leverage, collateralUsd: g.collateralUsd, entry }, price);
-    const car = this.buildCar(prev, price, pAnim, m, layers, t, false);
+    const car = this.buildCar(prev, price, pAnim, m, layers, t, false, g.id);
     car.free_collateral = Math.max(0, this.engine.freeCollateralUsd() - g.collateralUsd);
     let crashed = false;
     if (st.crashedAt !== null) {
@@ -404,6 +435,7 @@ export class Session extends EventEmitter {
     const focus = p ?? this.focusGhost();
     const layers = this.layers.compute(price, focus ? focus.side : -1, focus ? focus.leverage : 100, t, s);
 
+    if (!p) this.hwSmooth.delete('car');
     const car = p ? this.buildCar(p, price, pAnim, m, layers, t, true) : null;
     if (p && car) {
       const key = `${p.pubkey ?? 'paper'}:${p.openedAt}`;
@@ -648,6 +680,20 @@ export class Session extends EventEmitter {
   async trades(): Promise<TradeRecord[]> {
     if (this.engine.kind === 'live') return this.live.fetchTrades().catch(() => []);
     return this.paper.recentTrades;
+  }
+
+  /** Update 17: the trades page: 'paper' for the practice engine, else any wallet address (Jupiter's history). */
+  async tradesFor(wallet: string, limit: number): Promise<TradeRecord[]> {
+    if (!wallet || wallet === 'paper') return this.paper.recentTrades.slice(0, limit);
+    return this.live.fetchTradesFor(wallet, limit);
+  }
+
+  /** Update 17: the conditions page: the current state plus the closes behind every horizon. */
+  conditionsDetail(): { state: ConditionsState | null; series: ReturnType<ConditionsEngine['detail']>; price: number } {
+    const price = this.feed.lastTick?.price ?? 0;
+    const focus = this.engine.position ?? null;
+    const state = price > 0 ? this.conditions.compute(price, Date.now(), focus ? focus.leverage : 100, focus ? focus.side : -1, this.layers, null) : null;
+    return { state, series: this.conditions.detail(this.layers), price };
   }
 
   // ---- commands -------------------------------------------------------------------------------

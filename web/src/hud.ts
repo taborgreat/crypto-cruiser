@@ -2,6 +2,7 @@
 // TIME TO LIQUIDATION top-centre with its history strip (Update 10 §1), the mirror top-right (Update 10 §2),
 // the leverage dial + tiles row, the pedals row. Text updates at 10 Hz, the needle and the strip at 60 Hz.
 import { headwayColor, type HeadwayColor } from '../../shared/kinematics.js';
+import { HORIZON_CHIPS } from '../../shared/horizon.js';
 import { closeFeeUsd, liquidationPrice, pnlUsd } from '../../shared/jupiter.js';
 import { MARKET_PRICING } from '../../shared/preview.js';
 import { trendWord } from '../../shared/readout.js';
@@ -16,7 +17,9 @@ export interface HudHandlers {
   onSettings(): void;
   onRewind(): void;
   onRenderer(): void;
-  onCamera(): void;
+  onTags(): void;
+  onMute(): void;
+  onChase(): void;
   onTopDown(): void;
   onExit(): void;
   onHelp(): void;
@@ -25,6 +28,9 @@ export interface HudHandlers {
   onLabels(): void;
   onStripClick(t: number, price: number): void;
   onExits(): void;
+  onPage(kind: 'trades' | 'conditions'): void;
+  /** Update 19: the horizon from the chip; null = back to auto. */
+  onHorizon(sec: number | null): void;
 }
 
 const PEDALS: Array<{ key: string; label: string; action: PedalAction; danger?: boolean }> = [
@@ -80,6 +86,7 @@ export class Hud {
   constructor(private root: HTMLElement, private h: HudHandlers) {
     root.innerHTML = `
       <div class="live-border" id="liveBorder" hidden></div>
+      <div class="rear-strip" id="rearStrip" hidden><span>MIRROR · behind you</span></div>
       <div class="hud-top">
         <div class="chips" id="chips">
           <span class="chip mode" id="chipMode">PRACTICE</span>
@@ -87,17 +94,20 @@ export class Hud {
           <span class="chip rewind" id="chipRewind" hidden>REWIND</span>
           <span class="chip" id="chipMarket">—</span>
           <span class="chip price" id="chipPrice" hidden>—</span>
-          <span class="chip" id="chipHorizon">H —</span>
+          <span class="chip" id="chipHorizon" title="click: change the horizon" style="cursor:pointer;pointer-events:auto">H —</span>
           <span class="chip" id="chipFeed">feed —</span>
           <span class="chip" id="chipView">price-only</span>
           <span class="chip" id="chipInvert" hidden>INVERT</span>
           <span class="chip warn" id="chipOrder" hidden>LIMIT PENDING</span>
           <span class="chip more" id="chipMore" hidden style="position:absolute;right:0;top:0">···</span>
         </div>
+        <div class="hz-menu" id="hzMenu" hidden></div>
         <div class="hud-buttons">
-          <button data-act="topdown" id="btnTop" title="V · top-down / driver seat">top-down</button>
+          <button data-act="topdown" id="btnTop" title="V · top-down / drive">top-down</button>
+          <button data-act="chase" id="btnChase" title="K · switch: TRAFFIC (the car in front) ↔ CHASE (the police car behind you)">TRAFFIC</button>
           <button data-act="renderer" id="btnRenderer">3D</button>
-          <button data-act="camera" id="btnCamera">chase cam</button>
+          <button data-act="tags" id="btnTags" title="the tags above the cars: on / faded / to the side / off">tags: on</button>
+          <button data-act="mute" id="btnMute" title="mute everything">🔊</button>
           <button data-act="chart" title="B">chart</button>
           <button data-act="exits" id="btnExits" title="take profit / stop loss" hidden>exits</button>
           <button data-act="exit" id="btnExit">menu</button>
@@ -107,6 +117,8 @@ export class Hud {
             <button data-act="labels" title="L">label everything</button>
             <button data-act="inspect" title="I">inspect panel</button>
             <button data-act="help" title="H">keys and help</button>
+            <button data-act="page-trades" title="every trade of a wallet, with charts">trades page</button>
+            <button data-act="page-conditions" title="the seven horizons in full">conditions page</button>
             <button data-act="settings" title="Esc">settings</button>
           </div>
         </div>
@@ -165,7 +177,7 @@ export class Hud {
           <div id="sideNumbers"><div><span>POSITION</span><b id="snSize">—</b></div><div><span>AVAILABLE</span><b id="snFuel">—</b></div></div>
         </div>
         <div class="readouts">
-          <div class="readout" id="rGap"><div class="r-label">TO LIQUIDATION</div><div class="r-value" id="rGapV">—</div><div class="r-sub" id="rGapS">—</div></div>
+          <div class="readout" id="rGap"><div class="r-label" id="rGapL">TO LIQUIDATION</div><div class="r-value" id="rGapV">—</div><div class="r-sub" id="rGapS">—</div></div>
           <div class="readout" id="rPnl"><div class="r-label">P&amp;L · AFTER FEES</div><div class="r-value" id="rPnlV">—</div><div class="r-sub" id="rPnlS">—</div></div>
           <div class="readout" id="rEntry"><div class="r-label">FROM ENTRY</div><div class="r-value" id="rEntryV">—</div><div class="r-sub" id="rEntryS">—</div></div>
           <div class="readout secondary" id="rSize"><div class="r-label">POSITION</div><div class="r-value" id="rSizeV">—</div><div class="r-sub" id="rSizeS">—</div></div>
@@ -177,10 +189,10 @@ export class Hud {
       <div class="banner" id="banner" hidden><h2 id="bannerTitle"></h2><p id="bannerText"></p><button id="bannerBtn" hidden>back to menu</button></div>
       <div class="help" id="help" hidden><h3>CONTROLS</h3><table id="helpTable"></table><p style="color:var(--muted);font-size:12px;margin:10px 0 0">Your car never moves on screen. The car ahead is your liquidation price. Time to liquidation is how long until you hit it at the current rate. Before you commit, each lane drives the position as if you had pressed Go that long ago; from above you compare their spacing, from the seat you feel the closing speed. Hover anything for its price and time.</p></div>
     `;
-    for (const id of ['liveBorder', 'chips', 'chipMode', 'chipGhost', 'chipRewind', 'chipMarket', 'chipPrice', 'chipHorizon', 'chipFeed', 'chipView', 'chipInvert', 'chipOrder', 'chipMore', 'hudMenu', 'btnExits', 'btnTop', 'btnRenderer', 'btnCamera', 'btnExit',
+    for (const id of ['liveBorder', 'rearStrip', 'hzMenu', 'chips', 'chipMode', 'chipGhost', 'chipRewind', 'chipMarket', 'chipPrice', 'chipHorizon', 'chipFeed', 'chipView', 'chipInvert', 'chipOrder', 'chipMore', 'hudMenu', 'btnExits', 'btnTop', 'btnRenderer', 'btnTags', 'btnChase', 'btnMute', 'btnExit',
       'toasts', 'pricePod', 'ppPrice', 'ppDir', 'ppSub', 'headway', 'hwLabel', 'hwMain', 'hwDist', 'hwProj', 'hwT0', 'hwT1', 'hwCaption', 'clearTag', 'mirror', 'mTitle', 'mEntry', 'mStop', 'scaleBar', 'sbMain', 'sbSub',
       'dashNumbers', 'dnAtr', 'dnAtr5', 'dnFunding', 'dnUtil', 'dnSpread', 'dnBasis', 'dnPrice', 'dnH', 'dnCandles',
-      'speedoTicks', 'spLev', 'spSub', 'barThrottle', 'barBrake', 'snSize', 'snFuel', 'rGap', 'rGapV', 'rGapS', 'rPnl', 'rPnlV', 'rPnlS', 'rEntry', 'rEntryV', 'rEntryS',
+      'speedoTicks', 'spLev', 'spSub', 'barThrottle', 'barBrake', 'snSize', 'snFuel', 'rGap', 'rGapL', 'rGapV', 'rGapS', 'rPnl', 'rPnlV', 'rPnlS', 'rEntry', 'rEntryV', 'rEntryS',
       'hudStack', 'rSize', 'rSizeV', 'rSizeS', 'rFuel', 'fuelLabel', 'fuelV', 'fuelBar', 'fuelS', 'pedals', 'banner', 'bannerTitle', 'bannerText', 'bannerBtn', 'help', 'helpTable']) {
       this.$[id] = el(root, `#${id}`);
     }
@@ -207,6 +219,10 @@ export class Hud {
       this.$.pedals.appendChild(b);
     }
     this.$.helpTable.innerHTML = KEY_HELP.map(([k, d]) => `<tr><td>${k}</td><td>${d}</td></tr>`).join('');
+    // Update 19: the horizon from inside the drive
+    this.$.hzMenu.innerHTML = `<span class="muted">horizon</span>${HORIZON_CHIPS.map((c) => `<button data-hz="${c.sec}">${c.label}</button>`).join('')}<button data-hz="auto">auto</button>`;
+    this.$.chipHorizon.addEventListener('click', () => { this.$.hzMenu.hidden = !this.$.hzMenu.hidden; });
+    this.$.hzMenu.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.addEventListener('click', () => { this.$.hzMenu.hidden = true; this.h.onHorizon(b.dataset.hz === 'auto' ? null : Number(b.dataset.hz)); }));
     root.querySelectorAll<HTMLButtonElement>('button[data-act]').forEach((b) => {
       b.addEventListener('click', () => {
         const act = b.dataset.act;
@@ -215,7 +231,9 @@ export class Hud {
         if (act === 'settings') this.h.onSettings();
         else if (act === 'rewind') this.h.onRewind();
         else if (act === 'renderer') this.h.onRenderer();
-        else if (act === 'camera') this.h.onCamera();
+        else if (act === 'tags') this.h.onTags();
+        else if (act === 'mute') this.h.onMute();
+        else if (act === 'chase') this.h.onChase();
         else if (act === 'topdown') this.h.onTopDown();
         else if (act === 'exit') this.h.onExit();
         else if (act === 'help') this.h.onHelp();
@@ -223,6 +241,8 @@ export class Hud {
         else if (act === 'chart') this.h.onChart();
         else if (act === 'labels') this.h.onLabels();
         else if (act === 'exits') this.h.onExits();
+        else if (act === 'page-trades') this.h.onPage('trades');
+        else if (act === 'page-conditions') this.h.onPage('conditions');
       });
     });
     this.$.bannerBtn.addEventListener('click', () => { this.hideBanner(); this.h.onExit(); });
@@ -371,7 +391,7 @@ export class Hud {
     const live = st?.engine === 'live';
     const rewind = !!f?.rewind;
     const ghostMode = s.screen === 'ghost';
-    this.$.liveBorder.hidden = !(live && !!st?.wallet.address);
+    this.$.liveBorder.hidden = true; // Update 18: no red frame; the REAL chip and the confirm sheet say it
     this.$.chipMode.textContent = live ? 'REAL' : 'PRACTICE';
     this.$.chipMode.classList.toggle('live', live);
     this.$.chipGhost.hidden = !(ghostMode && !rewind);
@@ -379,9 +399,16 @@ export class Hud {
     this.$.chipOrder.hidden = !st?.pendingOrder;
     if (st?.pendingOrder) this.$.chipOrder.textContent = `LIMIT ${st.pendingOrder.side === 1 ? 'LONG' : 'SHORT'} @ ${fmtPrice(st.pendingOrder.triggerPrice)}`;
     this.$.btnRenderer.textContent = s.visual.renderer === '3d' ? '3D' : '2D';
-    this.$.btnCamera.textContent = s.visual.camera === 'chase' ? 'chase cam' : 'driver cam';
-    this.$.btnCamera.hidden = s.visual.renderer !== '3d' || s.visual.topDown;
-    this.$.btnTop.textContent = s.visual.topDown ? 'top-down' : 'driver seat';
+    this.$.btnTags.textContent = `tags: ${s.visual.tags}`;
+    this.$.btnTop.textContent = s.visual.topDown ? 'top-down' : 'drive';
+    this.$.btnMute.textContent = s.visual.muted ? '🔇' : '🔊';
+    this.$.btnMute.classList.toggle('on', s.visual.muted);
+    this.$.btnChase.classList.toggle('on', s.visual.chase);
+    this.$.btnChase.textContent = s.visual.chase ? 'CHASE' : 'TRAFFIC'; // Update 18: the button names the mode you are in
+    // CHASE (Update 16): same numbers, relabelled; the mirror strip frame shows in the seat view
+    this.$.hwLabel.textContent = s.visual.chase ? 'TIME UNTIL CAUGHT' : 'TIME TO LIQUIDATION';
+    this.$.rGapL.textContent = s.visual.chase ? 'DISTANCE AHEAD OF IT' : 'TO LIQUIDATION';
+    this.$.rearStrip.hidden = !(s.visual.chase && s.visual.renderer === '3d' && !(s.visual.topDown && !s.frame?.car && !s.waitingFill));
     this.$.btnTop.classList.toggle('on', s.visual.topDown);
     this.$.btnExit.hidden = ghostMode;
     this.$.btnExits.hidden = !f?.car || rewind;
@@ -453,10 +480,16 @@ export class Hud {
     this.setHeadway(color, c.headway_s, c.headway_proj_s, Math.abs(f.price - c.liq), isGhost, c.gap_pct * 100);
 
     // leverage dial text (Update 9 A10)
-    this.$.spLev.innerHTML = `${c.leverage.toFixed(1)}x${isGhost ? '<span class="tag">PREVIEW</span>' : ''}`;
+    // Update 15: effective leverage big, the leverage the position was opened at small, when they differ
+    const setLev = !isGhost && s.drive ? s.drive.leverage0 : null;
+    const showSet = setLev !== null && Math.abs(setLev - c.leverage) >= 0.05;
+    this.$.spLev.innerHTML = `${c.leverage.toFixed(1)}x${showSet ? `<small class="lev-set">effective · ${setLev!.toFixed(setLev! >= 100 ? 0 : 1)}× set</small>` : ''}${isGhost ? '<span class="tag">PREVIEW</span>' : ''}`;
     const liqMoving = Math.abs(c.v_gap_liq) > 1e-5 ? fmtRate((-c.v_gap_liq / c.leverage) * f.price, H, 'money') : 'no';
-    this.$.spSub.textContent = `price ${fmtRate((c.v_gap / c.leverage) * 100, H, 'pct')} · trend ${fmtRate((c.v_gap_trend / c.leverage) * 100, H, 'pct')} · liq moving: ${liqMoving}`;
-    this.$.spSub.title = 'rates in the P&L direction: + is away from liquidation';
+    // Update 15: the market's push on my car in plain words; never a pedal
+    const pushPct = (-c.v_gap_impulse / c.leverage) * 100; // % of price per second, + = against me
+    const market = Math.abs(pushPct) < 1e-4 ? 'market: steady' : pushPct > 0 ? `market: pushing you ${fmtRate(pushPct, H, 'pct')}` : `market: easing ${fmtRate(pushPct, H, 'pct')}`;
+    this.$.spSub.textContent = `${market} · trend ${fmtRate((c.v_gap_trend / c.leverage) * 100, H, 'pct')} · liq moving: ${liqMoving}`;
+    this.$.spSub.title = 'market: the tape\'s push on your car (+ against you, − for you) · trend in the P&L direction (+ away from liquidation)';
     this.$.barThrottle.style.width = `${Math.round(clamp(c.throttle, 0, 1) * 100)}%`;
     this.$.barBrake.style.width = `${Math.round(clamp(c.brake, 0, 1) * 100)}%`;
 
@@ -531,7 +564,6 @@ export class Hud {
 
   private setHeadway(color: HeadwayColor, hw: number | null, hp: number | null, toLiqUsd: number | null, ghost: boolean, pctV: number): void {
     this.$.headway.className = `headway ${color}`;
-    this.$.hwLabel.textContent = 'TIME TO LIQUIDATION';
     void ghost;
     this.$.hwMain.textContent = fmtHeadway(hw);
     this.$.hwProj.textContent = fmtHeadway(hp);

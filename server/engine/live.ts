@@ -439,7 +439,7 @@ export class LiveEngine extends EventEmitter implements Engine {
     let price = this.markPrice ?? prev?.entry ?? 0;
     if (found) {
       fees = found.feeUsd;
-      realized = (found.pnlUsd ?? 0) - found.feeUsd; // Jupiter's pnl is before fees (verified on a liquidation row)
+      realized = found.pnlUsd ?? 0; // already after fees (the row's pnl before fees minus its fee)
       if (found.price > 0) price = found.price;
       if (row) {
         row.realizedCreditedUsd += realized - estimate;
@@ -453,7 +453,7 @@ export class LiveEngine extends EventEmitter implements Engine {
     const lifetime = row ? row.returnedUsd - row.contributedUsd : realized;
     const signed = `${realized >= 0 ? '+' : ''}${realized.toFixed(2)}`;
     const basis = found ? '' : ' (estimate: Jupiter has no trade row yet)';
-    const detail = { price, pnlUsd: found?.pnlUsd ?? realized + fees, feesUsd: fees, realizedUsd: realized, returnedUsd: row?.returnedUsd ?? 0, lifetimeUsd: lifetime, position: prev, source: found ? 'jupiter' : 'quote', txid: found?.txid };
+    const detail = { price, pnlUsd: found ? (found.pnlUsd ?? 0) + found.feeUsd : realized + fees, feesUsd: fees, realizedUsd: realized, returnedUsd: row?.returnedUsd ?? 0, lifetimeUsd: lifetime, position: prev, source: found ? 'jupiter' : 'quote', txid: found?.txid };
     if (found && /liquidation/.test(found.action)) {
       this.queued.push({ kind: 'liquidated', message: `Liquidated on Jupiter at ${price.toFixed(dp)} · ${signed} after fees`, detail });
     } else if (tx.entire || gone) {
@@ -878,7 +878,12 @@ export class LiveEngine extends EventEmitter implements Engine {
    */
   async fetchTrades(limit = 25): Promise<TradeRecord[]> {
     if (!this.wallet) return [];
-    const json = await jup<{ dataList?: Array<Record<string, unknown>> }>(`/trades?walletAddress=${this.wallet}&start=0&end=${limit}`);
+    return this.fetchTradesFor(this.wallet, limit);
+  }
+
+  /** Update 17: the trade history of any wallet (the trades page). `pnlUsd` is after fees, like the practice records. */
+  async fetchTradesFor(wallet: string, limit = 25): Promise<TradeRecord[]> {
+    const json = await jup<{ dataList?: Array<Record<string, unknown>> }>(`/trades?walletAddress=${wallet}&start=0&end=${Math.max(1, Math.min(500, Math.floor(limit)))}`);
     const rows = json.dataList ?? [];
     const str = (v: unknown) => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : undefined);
     const usd = (v: unknown) => { const s = str(v); return s === undefined ? null : parseUsd(s); };
@@ -887,6 +892,8 @@ export class LiveEngine extends EventEmitter implements Engine {
       const sideStr = (str(r.side) ?? str(r.positionSide) ?? '').toLowerCase();
       const orderType = (str(r.orderType) ?? '').toLowerCase();
       const liquidated = orderType === 'liquidation' || (Number(r.liquidationFee) || 0) > 0;
+      const fee = usd(r.fee) ?? 0;
+      const pnlRaw = usd(r.pnl ?? r.pnlUsd ?? r.realisedPnlUsd ?? r.pnlAfterFeesUsd);
       return {
         t: (Number(r.createdTime) || 0) * 1000,
         action: `${str(r.action) ?? 'trade'}${liquidated ? ' (liquidation)' : ''}`.toLowerCase(),
@@ -894,8 +901,8 @@ export class LiveEngine extends EventEmitter implements Engine {
         side: sideStr === 'long' ? 1 : -1,
         sizeUsd: Math.abs(usd(r.size ?? r.sizeUsdDelta ?? r.sizeUsd) ?? 0),
         price: usd(r.price ?? r.priceUsd ?? r.markPriceUsd) ?? 0,
-        pnlUsd: usd(r.pnl ?? r.pnlUsd ?? r.realisedPnlUsd ?? r.pnlAfterFeesUsd),
-        feeUsd: usd(r.fee) ?? 0,
+        pnlUsd: pnlRaw === null ? null : pnlRaw - fee, // Jupiter's pnl is before fees; the record is after, like practice
+        feeUsd: fee,
         txid: str(r.txHash ?? r.txSignature ?? r.signature ?? r.txId),
       } satisfies TradeRecord;
     });

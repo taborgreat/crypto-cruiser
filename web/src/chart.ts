@@ -114,9 +114,15 @@ export class BridgeChart {
     for (let i = from; i <= to; i++) { const b = this.bars[i]; if (b.low < min) min = b.low; if (b.high > max) max = b.high; }
     if (!Number.isFinite(min) || !Number.isFinite(max)) return orig();
     const mark = this.lines.get('mark')?.price ?? this.bars[this.bars.length - 1].close;
-    for (const l of this.lines.values()) if (Math.abs(l.price - mark) / mark < 0.03) { min = Math.min(min, l.price); max = Math.max(max, l.price); }
-    const pad = Math.max((max - min) * 0.12, mark * 0.0004);
-    return { priceRange: { minValue: min - pad, maxValue: max + pad } };
+    // Update 17: a tight window by default: ±0.4 % of the mark (about a dollar on SOL), widened only to keep the
+    // liquidation and entry lines and the last twenty bars in view, never wider than ±1.5 %
+    let half = mark * 0.004;
+    for (const id of ['ahead', 'entry']) { const l = this.lines.get(id); if (l) half = Math.max(half, Math.abs(l.price - mark) * 1.15); }
+    half = Math.min(half, mark * 0.015);
+    let lo = mark - half, hi = mark + half;
+    for (let i = Math.max(from, to - 20); i <= to; i++) { const b = this.bars[i]; if (b.low < lo) lo = b.low; if (b.high > hi) hi = b.high; }
+    void min; void max;
+    return { priceRange: { minValue: lo, maxValue: hi } };
   }
 
   get open(): boolean { return !this.collapsed; }

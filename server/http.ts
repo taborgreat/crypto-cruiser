@@ -173,7 +173,13 @@ async function handleApi(session: Session, req: http.IncomingMessage, res: http.
   if (p === '/api/live/positions' && method === 'GET') return send(res, 200, await session.walletReport());
 
   // Recent trades: on Solana for live (Jupiter trade history), in memory for practice.
-  if (p === '/api/trades' && method === 'GET') return send(res, 200, await session.trades());
+  if (p === '/api/trades' && method === 'GET') {
+    const wallet = url.searchParams.get('wallet');
+    if (wallet === null) return send(res, 200, await session.trades());
+    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? 300)));
+    try { return send(res, 200, await session.tradesFor(wallet, limit)); } catch (err) { return send(res, 502, { ok: false, message: (err as Error).message }); }
+  }
+  if (p === '/api/conditions/detail' && method === 'GET') return send(res, 200, session.conditionsDetail());
 
   if (p === '/api/candles' && method === 'GET') {
     const sec = Number(url.searchParams.get('interval') ?? 60);

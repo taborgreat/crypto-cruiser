@@ -57,7 +57,7 @@ export class PaperEngine implements Engine {
 
   private record(t: TradeRecord): void {
     this.recentTrades.unshift(t);
-    if (this.recentTrades.length > 50) this.recentTrades.length = 50;
+    if (this.recentTrades.length > 500) this.recentTrades.length = 500; // Update 17: the trades page shows them all
   }
 
   private recompute(p: PositionState): void {

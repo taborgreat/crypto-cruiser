@@ -11,8 +11,9 @@ export interface SoundInput {
   vRoad: number;
   headway: number;        // seconds (Infinity when not closing)
   color: HeadwayColor;
-  throttle: number;       // 0..1
-  brake: number;          // 0..1
+  impulse: number;        // −1..1 (Update 15): surge bends the note up, drag down
+  driving: boolean;       // Update 16: a position is on the road (the tyre hiss only then, at a tenth)
+  chase: boolean;         // Update 16: CHASE: the monster's roar rises as it gains
   horizonSec: number;
   thresholds: { green: number; orange: number; critical: number };
 }
@@ -27,6 +28,8 @@ export class Sound {
   private engineGain!: GainNode;
   private engineFilter!: BiquadFilterNode;
   private tireGain!: GainNode;
+  private roar!: OscillatorNode;
+  private roarGain!: GainNode;
   private tireFilter!: BiquadFilterNode;
   private alarm!: OscillatorNode;
   private alarmGain!: GainNode;
@@ -82,6 +85,18 @@ export class Sound {
     noise.connect(this.tireFilter).connect(this.tireGain).connect(this.master);
     noise.start();
 
+    // CHASE (Update 16): the monster's roar, a low saw that rises as it gains
+    this.roar = ctx.createOscillator();
+    this.roar.type = 'sawtooth';
+    this.roar.frequency.value = 44;
+    const roarFilter = ctx.createBiquadFilter();
+    roarFilter.type = 'lowpass';
+    roarFilter.frequency.value = 160;
+    this.roarGain = ctx.createGain();
+    this.roarGain.gain.value = 0;
+    this.roar.connect(roarFilter).connect(this.roarGain).connect(this.master);
+    this.roar.start();
+
     this.alarm = ctx.createOscillator();
     this.alarm.type = 'sine';
     this.alarm.frequency.value = 300;
@@ -106,13 +121,18 @@ export class Sound {
     const hMul = Math.pow(Math.min(1.6, Math.max(0.45, 60 / Math.max(10, i.horizonSec))), 0.5);
     const vYouVis = Math.max(0, i.vYou) * 400 * hMul;
     const base = (42 + Math.min(250, Math.max(0, i.leverage)) * 0.32) * hMul;
-    const freq = base + vYouVis + i.throttle * 25;
+    const surge = Math.max(0, i.impulse), drag = Math.max(0, -i.impulse);
+    const freq = base + vYouVis + surge * 25 - drag * 12;
     ramp(this.engine.frequency, freq, 0.12);
     ramp(this.engineSub.frequency, freq / 2, 0.12);
-    ramp(this.engineFilter.frequency, 300 + i.throttle * 900 + vYouVis * 4, 0.1);
-    ramp(this.engineGain.gain, 0.05 + i.throttle * 0.04 - i.brake * 0.02, 0.1);
+    ramp(this.engineFilter.frequency, 300 + surge * 900 + vYouVis * 4, 0.1);
+    ramp(this.engineGain.gain, 0.05 + surge * 0.04 - drag * 0.02, 0.1);
 
-    ramp(this.tireGain.gain, Math.min(0.12, i.vRoad * 1.2 + Math.max(0, i.vYou) * 0.3), 0.2);
+    // Update 16: the tyre hiss only while driving a position, at a tenth of what it was
+    ramp(this.tireGain.gain, i.driving ? Math.min(0.012, (i.vRoad * 1.2 + Math.max(0, i.vYou) * 0.3) * 0.1) : 0, 0.2);
+    const gaining = i.chase && i.active && Number.isFinite(i.headway) ? Math.max(0, Math.min(1, (120 - i.headway) / 120)) : 0;
+    ramp(this.roarGain.gain, gaining * 0.2, 0.25);
+    ramp(this.roar.frequency, 40 + gaining * 36, 0.3);
     ramp(this.tireFilter.frequency, 1200 + Math.max(0, i.vYou) * 12_000, 0.2);
 
     // alarm: rising tone from the green threshold down to the critical one, pulsing when red

@@ -3,6 +3,7 @@
 // that get liquidated respawn immediately at the mark; the crash count is the information. The horizon
 // during the rewind is lookback / 20 so the stretch reads as ~20 s of driving.
 import { MarketKinematics, carKinematics, type KinematicsParams } from '../shared/kinematics.js';
+import { marketImpulse } from '../shared/kinematics.js';
 import { deriveHorizon } from '../shared/horizon.js';
 import { pnlUsd } from '../shared/jupiter.js';
 import { previewPosition } from '../shared/preview.js';
@@ -142,7 +143,7 @@ export class Rewind {
         gap: Math.max(0, k.gap), gap_pct: k.gap_pct, v_gap: k.v_gap, v_close: k.v_close, a_gap: k.a_gap,
         headway_s: num(k.headway_s), headway_proj_s: num(k.headway_proj_s),
         v_road: k.v_road, v_you: k.v_you, v_ahead: k.v_ahead, v_gap_trend: k.v_gap_trend, v_gap_impulse: k.v_gap_impulse, v_gap_liq: 0,
-        brake_ahead: k.brake_ahead, slam: k.slam, lurch: k.lurch, gap_anim: Math.max(0, k.gap), throttle: 0, brake: 0,
+        brake_ahead: k.brake_ahead, slam: k.slam, lurch: k.lurch, gap_anim: Math.max(0, k.gap), throttle: 0, brake: 0, impulse: marketImpulse(k.v_gap_impulse),
         pnl_pct: k.fav * l.pos.leverage * 100, pnl_usd: pnl, fees_usd: l.pos.closeFeeUsd, size_usd: l.pos.sizeUsd, collateral_usd: l.pos.collateralUsd,
         free_collateral: 0, entry_dist: k.entry_dist, stop_dist: null, stop_price: null, realized_usd: 0,
       };

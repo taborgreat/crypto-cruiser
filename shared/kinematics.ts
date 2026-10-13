@@ -256,3 +256,15 @@ export class Kinematics {
     });
   }
 }
+
+/** Car lengths / s of market impulse that reads as a full surge / drag (Update 15: never a pedal). */
+export const IMPULSE_FULL = 0.05;
+
+/**
+ * Update 15: the market's push on my car as a signed −1..1 figure. `v_gap_impulse` is + when the gap opens (for
+ * me), so a tick against me (gap closing) is a positive push: a surge. The pedals never carry this.
+ */
+export function marketImpulse(vGapImpulse: number, full: number = IMPULSE_FULL): number {
+  if (!(full > 0) || !Number.isFinite(vGapImpulse)) return 0;
+  return Math.max(-1, Math.min(1, -vGapImpulse / full)) || 0; // || 0: never −0
+}

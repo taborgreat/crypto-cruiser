@@ -114,8 +114,10 @@ export interface CarFrame {
   slam: boolean;             // sharp reversal against you
   lurch: -1 | 0 | 1;         // +1 surge (tick against you), -1 drag (tick for you), 0 settled
   gap_anim: number;          // gap at the animation price (CEX trades, offset-corrected); renderers use this
-  throttle: number;          // 0..1 your throttle position (pedal inputs + adverse impulse), decays
-  brake: number;             // 0..1 your brake position (pedal inputs + favorable impulse), decays
+  throttle: number;          // 0..1 the driver's gas pedal only, decaying after a press (Update 15: never the market)
+  brake: number;             // 0..1 the driver's brake pedal only, decaying after a press
+  impulse: number;           // Update 15: the market's push on my car, −1..1 (+ = a tick against me: surge; − = for me: drag).
+                             // The single source for camera pitch, FOV, the nose, the engine note.
   pnl_pct: number;           // leverage-scaled unrealized P&L on collateral, percent (before fees)
   pnl_usd: number;           // unrealized P&L before fees
   fees_usd: number;          // accrued borrow + estimated close fee

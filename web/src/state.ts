@@ -21,6 +21,13 @@ export interface VisualSettings {
   chartHeight: number;  // Update 9: drawer height, px
   laneShowAll: boolean; // Update 14: draw every lane; otherwise the focused lane plus the picked ones
   lanesPicked: string[];
+  tags: 'on' | 'faded' | 'side' | 'off'; // Update 14: the tags above the cars
+  tagsChosen: boolean;  // Update 18: the user picked a tags mode (else the default, side, applies)
+  orbit: { dist: number; yaw: number; pitch: number }; // Update 14: the seat camera (metres, radians)
+  topZoom: number;      // Update 16: bird's-eye zoom (1 = fit the drawn lanes)
+  muted: boolean;       // Update 16: everything silent
+  chase: boolean;       // Update 16: CHASE mode: the car in front becomes the monster behind you
+  poles: boolean;       // Update 19: the roadside poles that scroll at your speed (off: they read as noise)
 }
 
 export const DEFAULT_VISUAL: VisualSettings = {
@@ -43,6 +50,13 @@ export const DEFAULT_VISUAL: VisualSettings = {
   chartHeight: 220,
   laneShowAll: false,
   lanesPicked: [],
+  tags: 'side',
+  tagsChosen: false,
+  orbit: { dist: 9, yaw: 0, pitch: 0.3 },
+  topZoom: 1,
+  muted: false,
+  chase: false,
+  poles: false,
 };
 
 export interface UiEvent { t: number; kind: string; message: string }
@@ -170,6 +184,10 @@ function loadVisual(): VisualSettings {
       if (v.gapScale === 40 && v.speedScale === 12) { v.gapScale = 60; v.speedScale = 8; }
       if (!(v.chartHeight >= 100) || v.chartHeight === 160) v.chartHeight = 220;
       if (!Array.isArray(v.lanesPicked)) v.lanesPicked = [];
+      if (!v.orbit || !(v.orbit.dist > 0)) v.orbit = { ...DEFAULT_VISUAL.orbit };
+      if (!['on', 'faded', 'side', 'off'].includes(v.tags)) v.tags = 'side';
+      if (!v.tagsChosen) v.tags = 'side';
+      if (!(v.topZoom > 0)) v.topZoom = 1;
       return v;
     }
   } catch { /* ignore */ }

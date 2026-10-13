@@ -21,6 +21,8 @@ export interface GhostPanelDeps {
   onSettings(): void;
   onResume(): void;
   onCancelOrder(): void;
+  /** Update 17: open a full page (trades / conditions). */
+  onPage(kind: 'trades' | 'conditions'): void;
 }
 
 const LEV_PRESETS = [5, 10, 25, 50, 100, 150, 250];
@@ -86,6 +88,8 @@ export class GhostPanel {
           </div>
         </details>
         <div id="resumeRow" hidden><button class="primary wide" id="btnResume">RESUME</button></div>
+        <section class="ticket short" id="ticket">
+          <div class="ticket-head"><span>PLACE A POSITION</span><span id="ticketSide" class="short">SHORT ▼</span></div>
         <div class="side-tabs" id="segSide">
           <button data-v="1" class="long">Long</button>
           <button data-v="-1" class="short active">Short</button>
@@ -118,6 +122,25 @@ export class GhostPanel {
           <div class="presets" id="levPresets">${LEV_PRESETS.map((v) => `<button data-v="${v}">${v}x</button>`).join('')}</div>
         </div>
 
+        <div class="entry-row">
+          <span class="muted">Entry</span>
+          <button id="btnMarketEntry" class="tiny active">market</button>
+          <input type="number" id="limitPrice" step="0.01" placeholder="limit price">
+          <button id="btnNudgeBack" class="tiny" title="back [">◂</button><button id="btnNudgeFwd" class="tiny" title="forward ]">▸</button>
+        </div>
+        <div id="limitHint" class="muted mono small"></div>
+
+        <div class="summary">
+          <div class="s-row"><span>Entry price</span><span id="sumEntry" class="mono"></span></div>
+          <div class="s-row"><span>Liquidation price</span><span id="sumLiq" class="mono"></span></div>
+          <div class="s-row"><span>To liquidation at entry</span><span id="sumGap" class="mono"></span></div>
+          <div class="s-row"><span>Open fee</span><span id="sumFee" class="mono"></span></div>
+          <div class="s-row"><span>Borrow fee</span><span id="sumBorrow" class="mono"></span></div>
+          <div class="s-row"><span>Collateral after fees</span><span id="sumCol" class="mono"></span></div>
+        </div>
+
+        </section>
+
         <div class="gp-box horizon-box">
           <div class="box-head"><span>Horizon <span class="muted">· how much market feels like 20 s of driving</span></span><span class="mono" id="hLabel">H 1 m</span></div>
           <div class="presets" id="hChips">${HORIZON_CHIPS.map((c) => `<button data-v="${c.sec}" title="${fmtTime(c.sec)}">${c.label}</button>`).join('')}</div>
@@ -129,36 +152,23 @@ export class GhostPanel {
           </div>
         </div>
 
-        <div class="summary">
-          <div class="s-row"><span>Entry price</span><span id="sumEntry" class="mono"></span></div>
-          <div class="s-row"><span>Liquidation price</span><span id="sumLiq" class="mono"></span></div>
-          <div class="s-row"><span>To liquidation at entry</span><span id="sumGap" class="mono"></span></div>
-          <div class="s-row"><span>Open fee</span><span id="sumFee" class="mono"></span></div>
-          <div class="s-row"><span>Borrow fee</span><span id="sumBorrow" class="mono"></span></div>
-          <div class="s-row"><span>Collateral after fees</span><span id="sumCol" class="mono"></span></div>
-        </div>
-
-        <div class="entry-row">
-          <span class="muted">Entry</span>
-          <button id="btnMarketEntry" class="tiny active">market</button>
-          <input type="number" id="limitPrice" step="0.01" placeholder="limit price">
-          <button id="btnNudgeBack" class="tiny" title="back [">◂</button><button id="btnNudgeFwd" class="tiny" title="forward ]">▸</button>
-        </div>
-        <div id="limitHint" class="muted mono small"></div>
-
+        <div class="msg" id="msg"></div>
+        <div class="go-row"><button class="go primary" id="btnGo">GO ⏎</button><span class="go-hint" id="goHint"></span></div>
+        <div class="row" id="orderRow" hidden><span class="mono small" id="orderText" style="flex:1;color:var(--yellow)"></span><button id="btnCancelOrder" class="tiny">cancel</button></div>
         <div class="lanes" id="lanesBox">
-          <div class="lanes-head"><span>LANES · if Go now · if I had pressed Go…</span><label title="three LONG lanes left, three SHORT lanes right"><input type="checkbox" id="bothSides"> both sides</label><label title="draw every lane; otherwise only the focused lane and the ticked ones"><input type="checkbox" id="showAll"> all lanes</label></div>
+          <div class="lanes-head"><span>LANES · if Go now · if I had pressed Go…</span><label title="three LONG lanes left, three SHORT lanes right"><input type="checkbox" id="bothSides"> both sides</label><label title="draw every lane; otherwise only the focused lane and the ticked ones"><input type="checkbox" id="showAll"> all lanes</label><button class="tiny" id="onlyMine" title="draw only the focused lane: your car">only mine</button></div>
           <div class="lane-row head"><span>side</span><span>when</span><span>entry</span><span>P&amp;L after fees</span><span>to liq</span><span>liq'd</span><span>time</span></div>
           <div id="lanes"></div>
         </div>
 
         <div class="readout-line" id="readout">set side, leverage and size — the lanes drive it live</div>
 
-        <div class="conditions" id="conditions"></div>
+        <div class="page-buttons">
+          <button id="pgCond" title="the seven horizons in full, with the watcher's guide">CONDITIONS<small>the read · signals · risk at your leverage</small></button>
+          <button id="pgTrades" title="every trade of a wallet, with charts">TRADES<small>every trade · charts · win rate</small></button>
+        </div>
 
-        <div class="msg" id="msg"></div>
-        <div class="go-row"><button class="go primary" id="btnGo">GO ⏎</button><span class="go-hint" id="goHint"></span></div>
-        <div class="row" id="orderRow" hidden><span class="mono small" id="orderText" style="flex:1;color:var(--yellow)"></span><button id="btnCancelOrder" class="tiny">cancel</button></div>
+        <div class="conditions" id="conditions"></div>
         <button class="wide rewind-btn" id="btnRewind" title="R">REWIND · drive the past with this position</button>
 
         <details class="trades-box">
@@ -170,9 +180,9 @@ export class GhostPanel {
           <b>REAL MODE.</b> Go opens a position on Jupiter Perps with real SOL: Phantom signs, Jupiter's keeper fills (usually seconds). Every pedal after
           that is a real transaction to sign. Start small. Shorts use USDC collateral: Jupiter swaps SOL on the way in.
         </div>
-        <div class="foot"><span>V top-down / seat · H help · B chart · I inspect</span><span><button id="btnSettings" class="tiny">settings</button></span></div>
+        <div class="foot"><span>V top-down / drive · K chase · H help · B chart · I inspect</span><span><button id="btnSettings" class="tiny">settings</button></span></div>
       </div>`;
-    for (const id of ['btnLive', 'walletBox', 'btnConnect', 'walletInfo', 'btnDisconnect', 'btnCheckPos', 'tradingBox', 'twState', 'twInfo', 'twCreate', 'twUse', 'twPhantom', 'twFundRow', 'twAmount', 'twFund', 'twWithdraw', 'twSwap', 'resumeRow', 'btnResume', 'segSide', 'segMarket', 'sPrice', 'sFeed', 'balance', 'btnMax', 'payPct', 'payChips', 'payMax', 'amount', 'segToken', 'amountUsd', 'bankrollEdit', 'bankroll', 'sizeTok', 'sizeUsd',
+    for (const id of ['btnLive', 'ticket', 'ticketSide', 'walletBox', 'btnConnect', 'walletInfo', 'btnDisconnect', 'btnCheckPos', 'tradingBox', 'twState', 'twInfo', 'twCreate', 'twUse', 'twPhantom', 'twFundRow', 'twAmount', 'twFund', 'twWithdraw', 'twSwap', 'pgTrades', 'pgCond', 'onlyMine', 'resumeRow', 'btnResume', 'segSide', 'segMarket', 'sPrice', 'sFeed', 'balance', 'btnMax', 'payPct', 'payChips', 'payMax', 'amount', 'segToken', 'amountUsd', 'bankrollEdit', 'bankroll', 'sizeTok', 'sizeUsd',
       'levLabel', 'levRange', 'levNum', 'levPresets', 'hLabel', 'hChips', 'hSlider', 'hAutoRoom', 'hAutoVol', 'hEff',
       'sumEntry', 'sumLiq', 'sumGap', 'sumFee', 'sumBorrow', 'sumCol', 'btnMarketEntry', 'limitPrice', 'btnNudgeBack', 'btnNudgeFwd', 'limitHint', 'bothSides', 'showAll', 'lanes', 'readout', 'conditions', 'msg', 'btnGo', 'goHint',
       'orderRow', 'orderText', 'btnCancelOrder', 'btnRewind', 'tradesWhere', 'trades', 'liveWarn', 'btnSettings']) {
@@ -210,6 +220,8 @@ export class GhostPanel {
     this.$.twFund.addEventListener('click', () => void this.fundTrading());
     this.$.twWithdraw.addEventListener('click', () => void this.withdrawTrading());
     this.$.twSwap.addEventListener('click', () => void this.swapUsdc());
+    this.$.pgTrades.addEventListener('click', () => this.d.onPage('trades'));
+    this.$.pgCond.addEventListener('click', () => this.d.onPage('conditions'));
     this.$.btnGo.addEventListener('click', () => void this.go());
     this.$.btnResume.addEventListener('click', () => this.d.onResume());
     this.$.btnCancelOrder.addEventListener('click', () => this.d.onCancelOrder());
@@ -218,6 +230,7 @@ export class GhostPanel {
     (this.$.bothSides as HTMLInputElement).checked = this.d.store.state.visual.bothSides;
     (this.$.showAll as HTMLInputElement).checked = this.d.store.state.visual.laneShowAll;
     (this.$.showAll as HTMLInputElement).addEventListener('change', (e) => this.d.store.setVisual({ laneShowAll: (e.target as HTMLInputElement).checked }));
+    this.$.onlyMine.addEventListener('click', () => { this.d.store.setVisual({ laneShowAll: false, lanesPicked: [] }); (this.$.showAll as HTMLInputElement).checked = false; });
     (this.$.bothSides as HTMLInputElement).addEventListener('change', (e) => { this.d.store.setVisual({ bothSides: (e.target as HTMLInputElement).checked }); this.renderLanes(); this.changed(); });
     // horizon (Update 4)
     this.$.hChips.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.addEventListener('click', () => this.setHorizon(Number(b.dataset.v), true)));
@@ -253,6 +266,10 @@ export class GhostPanel {
     const lane = Number.isFinite(n) ? n : 3;
     this.primaryId = laneId(side, lane);
     this.$.segSide.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('active', Number(b.dataset.v) === side));
+    this.$.ticketSide.textContent = side === 1 ? 'LONG ▲' : 'SHORT ▼';
+    this.$.ticketSide.className = side === 1 ? 'long' : 'short';
+    this.$.ticket.classList.toggle('long', side === 1);
+    this.$.ticket.classList.toggle('short', side === -1);
     this.renderLanes();
   }
 
@@ -642,8 +659,8 @@ export class GhostPanel {
     const p = this.price();
     const dp = MARKETS[this.market].priceDp;
     if (this.limit !== null && p) {
-      this.$.limitHint.textContent = `limit ${fmtPrice(this.limit, dp)} · ${fmtPct((Math.abs(this.limit - p) / p) * 100)} from the mark (${fmtUsd(Math.abs(this.limit - p))}) · drag the road, click the chart, or [ ]`;
-    } else this.$.limitHint.textContent = 'market order at the current price · drag the road, click the chart, or [ ] to set a limit';
+      this.$.limitHint.textContent = `limit ${fmtPrice(this.limit, dp)} · ${fmtPct((Math.abs(this.limit - p) / p) * 100)} from the mark (${fmtUsd(Math.abs(this.limit - p))}) · shift-drag the road, click the chart, or [ ]`;
+    } else this.$.limitHint.textContent = 'market order at the current price · shift-drag the road, click the chart, or [ ] to set a limit';
   }
 
   private refresh(): void {

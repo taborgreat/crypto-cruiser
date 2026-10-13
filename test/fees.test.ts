@@ -14,7 +14,7 @@ const layers: Layers = { atr: 0.0008, atr_rate: 0.0008 / 60, atr5m: 0.0015, fund
 const base: CarFrame = {
   side: -1, entry: 100, liq: 100.7, leverage: 100, gap: 0.7, gap_pct: 0.007, v_gap: 0.021, v_close: -0.021, a_gap: 0,
   headway_s: null, headway_proj_s: null, v_road: 0.05, v_you: 0.029, v_ahead: 0.071, v_gap_trend: 0.021, v_gap_impulse: 0, v_gap_liq: 0,
-  brake_ahead: 0, slam: false, lurch: 0, gap_anim: 0.7, throttle: 0, brake: 0, pnl_pct: 0, pnl_usd: 0, fees_usd: 3.5, size_usd: 5000,
+  brake_ahead: 0, slam: false, lurch: 0, gap_anim: 0.7, throttle: 0, brake: 0, impulse: 0, pnl_pct: 0, pnl_usd: 0, fees_usd: 3.5, size_usd: 5000,
   collateral_usd: 46.5, free_collateral: 950, entry_dist: 0, stop_dist: null, stop_price: null, realized_usd: 0,
 };
 const ctx = { price: 100, horizonSec: 60, priceDp: 3, ageSec: 60 };

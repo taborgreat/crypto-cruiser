@@ -102,6 +102,14 @@ export class ConditionsEngine {
     return older.length ? older.concat(local) : local;
   }
 
+  /** Update 17: the conditions page: the last closes of every horizon (for sparklines) with the current rows. */
+  detail(layers: LayerManager, bars = 80): Array<{ h: HorizonKey; res_sec: number; t0: number; closes: number[] }> {
+    return HORIZONS.map((spec) => {
+      const c = this.series(spec.resSec, layers).slice(-bars);
+      return { h: spec.key, res_sec: spec.resSec, t0: c.length ? c[0].t : 0, closes: c.map((x) => x.c) };
+    });
+  }
+
   compute(price: number, t: number, leverage: number, driverSide: Side, layers: LayerManager, asOf: number | null): ConditionsState {
     const now = asOf ?? t;
     const force = asOf !== null;

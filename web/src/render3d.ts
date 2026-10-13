@@ -26,8 +26,16 @@ const ROAD_SEGS = 260;
 const LANE_W = ROAD_W / 3;
 const LANE_X3 = [-LANE_W, 0, LANE_W];                            // LIVE: three lanes, my car in the middle
 const SEAT_LANES = 4;                                             // PREVIEW (Update 14): 5 H · H · H/6 · now
-const NOW_LANE = 3;
-const LANE_X4 = [-1.5, -0.5, 0.5, 1.5].map((k) => k * LANE_W);  // same lane width; the road widens by 4/3
+// orbit camera (Update 14): distance from the point above my car, in metres
+const ORBIT_MIN = 0.4;
+const ORBIT_MAX = 80;
+const ORBIT_FP = 1.6;  // closer than this is first person: my own car is not drawn
+const ORBIT_HOME = { dist: 9, yaw: 0, pitch: 0.3 };
+// CHASE (Update 16): the mirror strip, as fractions of the viewport height from the top
+const REAR_TOP = 0.14;
+const REAR_H = 0.32;
+const REAR_LEFT = 0.3;  // Update 17: cut off at the sides like a mirror: 30 % margins, 40 % wide
+const REAR_W = 0.4;
 const DASH_PERIOD = 12;
 const ELEV_SCALE = 7;    // metres of road height per car length of "hill"
 const STREAKS = 56;
@@ -54,7 +62,7 @@ const NEON_PURPLE = 0x8a5cff;
 
 interface TrafficCar { model: CarModel; lane: number; z: number; speed: number }
 interface CarModel { g: THREE.Group; bodyMat: THREE.MeshStandardMaterial; edgeMat: THREE.LineBasicMaterial; headMat: THREE.MeshBasicMaterial; brakes: THREE.MeshStandardMaterial; bloom: THREE.Sprite[]; glow: THREE.PointLight | null }
-interface GhostModel { car: CarModel; ahead: CarModel; line: THREE.Mesh; entry: THREE.Mesh; trail: THREE.Line; trailGeo: THREE.BufferGeometry; aheadZ: number; carZ: number; impact: THREE.Sprite; side: Side; lane: number }
+interface GhostModel { car: CarModel; ahead: CarModel; monster?: CarModel; line: THREE.Mesh; entry: THREE.Mesh; trail: THREE.Line; trailGeo: THREE.BufferGeometry; aheadZ: number; carZ: number; impact: THREE.Sprite; side: Side; lane: number }
 
 const glowTexCache = new Map<string, THREE.CanvasTexture>();
 function glowTexture(color = '255,60,40'): THREE.CanvasTexture {
@@ -227,6 +235,62 @@ function makeCar(color: number, opacity: number, edge: number, bloom: boolean, l
   return { g, bodyMat, edgeMat, headMat, brakes, bloom: sprites, glow };
 }
 
+/**
+ * CHASE (Update 17): the chaser is a police car: white body, a red and blue light bar on the roof (the red half is
+ * the "brakes" material, so the trend against you lights it), its own headlights facing you.
+ */
+function makeMonster(): CarModel {
+  const m = makeCar(0xe9ecf5, 1, 0x4c9bff, false, true);
+  const red = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.22, 0.5), m.brakes);
+  red.position.set(-0.4, 1.5, 0.1);
+  const blueMat = new THREE.MeshStandardMaterial({ color: 0x0a0a3a, emissive: 0x3366ff, emissiveIntensity: 0 });
+  const blue = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.22, 0.5), blueMat);
+  blue.position.set(0.4, 1.5, 0.1);
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.08, 0.6), new THREE.MeshStandardMaterial({ color: 0x111118, metalness: 0.6, roughness: 0.4 }));
+  bar.position.set(0, 1.37, 0.1);
+  m.g.add(bar, red, blue);
+  m.g.userData.blueMat = blueMat;
+  return m;
+}
+
+/** The old monster, kept for reference (not used). */
+function makeMonsterSilhouette(): CarModel {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x0b0611, metalness: 0.2, roughness: 0.9, emissive: 0x2a0410, emissiveIntensity: 0.6, transparent: true, opacity: 1 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.6, 3.6), bodyMat);
+  body.position.set(0, 1.5, 0);
+  g.add(body);
+  const hump = new THREE.Mesh(new THREE.SphereGeometry(1.7, 10, 8), bodyMat);
+  hump.position.set(0, 2.9, 0.4);
+  g.add(hump);
+  for (const x of [-1.9, 1.9]) {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.6, 1.2), bodyMat);
+    arm.position.set(x, 1.1, -0.6);
+    g.add(arm);
+  }
+  const edgeMat = new THREE.LineBasicMaterial({ color: 0xff3b3b, transparent: true, opacity: 0.55 });
+  g.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(3.2, 2.6, 3.6)).translate(0, 1.5, 0), edgeMat));
+  const headMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 1 });
+  const brakes = new THREE.MeshStandardMaterial({ color: 0x3a0a0a, emissive: 0xff2020, emissiveIntensity: 0, transparent: true, opacity: 1 });
+  for (const x of [-0.7, 0.7]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8), brakes);
+    eye.position.set(x, 2.1, -1.85);
+    g.add(eye);
+  }
+  const sprites: THREE.Sprite[] = [];
+  for (const x of [-0.7, 0.7]) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+    s.position.set(x, 2.1, -2.0);
+    s.scale.set(0.9, 0.9, 1);
+    g.add(s);
+    sprites.push(s);
+  }
+  const glow = new THREE.PointLight(0xff2020, 0, 18);
+  glow.position.set(0, 2.2, -2.2);
+  g.add(glow);
+  return { g, bodyMat, edgeMat, headMat, brakes, bloom: sprites, glow };
+}
+
 function setOpacity(m: CarModel, o: number): void {
   m.bodyMat.opacity = o; m.headMat.opacity = o; m.brakes.opacity = o;
   m.edgeMat.opacity = Math.min(1, o + 0.4);
@@ -263,10 +327,18 @@ export class Render3D implements Renderer {
   private roadGeo!: THREE.PlaneGeometry;
   private roadBaseY!: Float32Array;
   private laneTex!: THREE.CanvasTexture;
-  private laneTex4!: THREE.CanvasTexture;
   /** Seat camera x: behind the focused lane in PREVIEW, the centre in LIVE. */
   private camX = 0;
   private previewLin = 0;
+  /** Orbit camera (Update 14): smoothed and target. yaw/pitch in radians; pitch is the elevation. */
+  private orbit = { ...ORBIT_HOME };
+  private orbitTarget = { ...ORBIT_HOME };
+  /** Bird's-eye zoom (Update 16): 1 = the drawn lanes fit; smoothed and target. */
+  private topZoom = 1;
+  private topZoomTarget = 1;
+  /** Update 18: the seat draws the drawn lanes, packed like the bird's-eye; the road is that many lanes wide. */
+  private seatLanes = 4;
+  private laneTexN = new Map<number, THREE.CanvasTexture>();
   private topRoad!: THREE.Mesh;
   private topTex!: THREE.CanvasTexture;
   private breakA!: THREE.Mesh;
@@ -275,6 +347,10 @@ export class Render3D implements Renderer {
   private ahead!: CarModel;
   private entryLine!: THREE.Mesh;
   private stopCar!: CarModel;
+  /** CHASE (Update 16): the monster behind you, the rear camera for the mirror strip, the wall that is the stop. */
+  private monster!: CarModel;
+  private rearCam = new THREE.PerspectiveCamera(48, 1, 0.3, 2000);
+  private wall!: THREE.Mesh;
   private ring!: THREE.Mesh;
   private exitMarks: THREE.Mesh[] = [];
   private traffic: TrafficCar[] = [];
@@ -417,8 +493,6 @@ export class Render3D implements Renderer {
     // road (driver seat)
     this.laneTex = laneTexture(3, false);
     this.laneTex.repeat.set(1, ROAD_LEN / DASH_PERIOD);
-    this.laneTex4 = laneTexture(SEAT_LANES, false);
-    this.laneTex4.repeat.set(1, ROAD_LEN / DASH_PERIOD);
     this.roadGeo = new THREE.PlaneGeometry(ROAD_W, ROAD_LEN, 1, ROAD_SEGS);
     this.roadGeo.rotateX(-Math.PI / 2);
     this.roadGeo.translate(0, 0, -(ROAD_AHEAD - ROAD_LEN / 2));
@@ -456,8 +530,18 @@ export class Render3D implements Renderer {
     tag(this.ahead.g, 'ahead');
     s.add(this.ahead.g);
     this.pickables.push(this.ahead.g);
+    this.monster = makeMonster();
+    tag(this.monster.g, 'ahead');
+    this.monster.g.visible = false;
+    s.add(this.monster.g);
+    this.pickables.push(this.monster.g);
+    this.wall = new THREE.Mesh(new THREE.BoxGeometry(ROAD_W + 2, 2.4, 0.5), new THREE.MeshStandardMaterial({ color: 0x1d2a40, emissive: 0x4c9bff, emissiveIntensity: 0.5, transparent: true, opacity: 0.85 }));
+    this.wall.position.y = 1.2;
+    tag(this.wall, 'stop');
+    this.wall.visible = false;
+    s.add(this.wall);
 
-    this.entryLine = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_W, 0.7), new THREE.MeshBasicMaterial({ color: 0xffd23f, depthTest: false }));
+    this.entryLine = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_W, 0.6), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 })); // Update 19: a white line on the road, under the car
     this.entryLine.renderOrder = 5;
     this.entryLine.rotation.x = -Math.PI / 2;
     this.entryLine.position.y = 0.02;
@@ -512,6 +596,32 @@ export class Render3D implements Renderer {
     this.el.hidden = !a;
   }
 
+  getOrbit(): { dist: number; yaw: number; pitch: number } { return { ...this.orbitTarget }; }
+  setOrbit(o: Partial<{ dist: number; yaw: number; pitch: number }>, snap = false): void {
+    Object.assign(this.orbitTarget, o);
+    this.orbitTarget.dist = clamp(this.orbitTarget.dist, ORBIT_MIN, ORBIT_MAX);
+    this.orbitTarget.pitch = clamp(this.orbitTarget.pitch, 0.03, 1.45);
+    if (snap) Object.assign(this.orbit, this.orbitTarget);
+  }
+  /** Wheel: factor > 1 zooms out (a higher, farther chase), < 1 zooms in, down to first person. */
+  zoomBy(factor: number): void { this.setOrbit({ dist: this.orbitTarget.dist * factor }); }
+  /** Drag: right moves the camera round to the right, up raises it. */
+  dragBy(dxPx: number, dyPx: number): void { this.setOrbit({ yaw: this.orbitTarget.yaw + dxPx * 0.006, pitch: this.orbitTarget.pitch - dyPx * 0.006 }); }
+  firstPerson(): boolean { return this.orbitTarget.dist < ORBIT_FP; }
+  toggleFirstPerson(): void { this.setOrbit(this.firstPerson() ? { dist: ORBIT_HOME.dist, pitch: ORBIT_HOME.pitch } : { dist: ORBIT_MIN }); }
+  resetOrbit(): void { this.setOrbit({ ...ORBIT_HOME }); }
+  getTopZoom(): number { return this.topZoomTarget; }
+  setTopZoom(z: number, snap = false): void { this.topZoomTarget = clamp(z, 0.3, 4); if (snap) this.topZoom = this.topZoomTarget; }
+  /** Wheel in the bird's-eye view: factor > 1 zooms out. */
+  zoomTopBy(factor: number): void { this.setTopZoom(this.topZoomTarget * factor); }
+
+  private seatTex(n: number): THREE.CanvasTexture {
+    let t = this.laneTexN.get(n);
+    if (!t) { t = laneTexture(n, false); t.repeat.set(1, ROAD_LEN / DASH_PERIOD); this.laneTexN.set(n, t); }
+    return t;
+  }
+  private seatX(li: number, n: number): number { return (li - (n - 1) / 2) * LANE_W; }
+
   setLook(nx: number, ny: number): void {
     this.lookTx = clamp(nx, -1, 1);
     this.lookTy = clamp(ny, -1, 1);
@@ -561,6 +671,23 @@ export class Render3D implements Renderer {
     return { x: ((p.x + 1) / 2) * this.width, y: ((1 - p.y) / 2) * this.height, visible: p.z < 1 && p.x > -1.1 && p.x < 1.1 && p.y > -1.1 && p.y < 1.1 };
   }
 
+  /** CHASE (Update 17): the police lights: red and blue alternate; brighter the more it is gaining. */
+  private policeLights(m: CarModel, nowMs: number, level: number): void {
+    const phase = Math.floor(nowMs / 140) % 2 === 0;
+    m.brakes.emissiveIntensity = (phase ? 2.5 : 0.2) * level;
+    const blue = m.g.userData.blueMat as THREE.MeshStandardMaterial | undefined;
+    if (blue) blue.emissiveIntensity = (phase ? 0.2 : 2.5) * level;
+    if (m.glow) { m.glow.color.set(phase ? 0xff2020 : 0x3366ff); m.glow.intensity = 6 * level; }
+  }
+
+  /** CHASE (Update 16): a label for something seen in the mirror strip, projected through the rear camera. */
+  private anchorRear(id: string, kind: HoverKind, x: number, y: number, z: number, text?: string, cls?: string, align?: 'left' | 'right' | 'center'): void {
+    const p = new THREE.Vector3(x, y, z).project(this.rearCam);
+    const sx = this.width * REAR_LEFT + ((p.x + 1) / 2) * this.width * REAR_W;
+    const sy = this.height * REAR_TOP + ((1 - p.y) / 2) * this.height * REAR_H;
+    this.anchorList.push({ id, kind, x: sx, y: sy, visible: p.z < 1 && p.x > -1.05 && p.x < 1.05 && p.y > -1.05 && p.y < 1.05, text, cls, align });
+  }
+
   private anchor(id: string, kind: HoverKind, x: number, y: number, z: number, text?: string, cls?: string, align?: 'left' | 'right' | 'center'): void {
     const p = this.project(x, y, z);
     this.anchorList.push({ id, kind, x: p.x, y: p.y, visible: p.visible, text, cls, align });
@@ -602,7 +729,7 @@ export class Render3D implements Renderer {
     const line = new THREE.Mesh(new THREE.PlaneGeometry(TOP_LANE_W - 0.4, 0.4), new THREE.MeshBasicMaterial({ color: laneHex, transparent: true, opacity: 0.8 }));
     line.rotation.x = -Math.PI / 2;
     tag(line, 'limit', g.id);
-    const entry = new THREE.Mesh(new THREE.PlaneGeometry(TOP_LANE_W - 0.5, 0.4), new THREE.MeshBasicMaterial({ color: 0xffd23f, depthTest: false }));
+    const entry = new THREE.Mesh(new THREE.PlaneGeometry(TOP_LANE_W - 0.5, 0.4), new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }));
     entry.renderOrder = 5;
     entry.rotation.x = -Math.PI / 2;
     entry.position.y = 0.02;
@@ -657,7 +784,7 @@ export class Render3D implements Renderer {
   private topDims(lanesShown: number): TopDims {
     const aspect = this.width / Math.max(1, this.height);
     const lanes = Math.max(2, lanesShown);
-    const depth = clamp((lanes * TOP_LANE_W * 1.18) / aspect, 18, 70); // the drawn lanes span ~85 % of the width
+    const depth = clamp((lanes * TOP_LANE_W * 1.18 * this.topZoom) / aspect, 10, 240); // the drawn lanes span ~85 % of the width at zoom 1
     const behind = depth * 0.2;
     return { depth, behind, ahead: depth - behind, camH: depth / 2 / Math.tan((TOP_FOV / 2) * (Math.PI / 180)), camZ: -(depth / 2 - behind) };
   }
@@ -693,10 +820,10 @@ export class Render3D implements Renderer {
     const lift = horizonLift(o.horizon?.h);
     const hasCar = !!f?.car;
     // PREVIEW: four lanes of the LIVE lane width, so the road widens by 4/3 and the dashes follow (Update 14)
-    this.road.scale.x = lerp(this.road.scale.x, hasCar ? 1 : SEAT_LANES / 3, clamp(dt * 4, 0, 1));
+    this.road.scale.x = lerp(this.road.scale.x, hasCar ? 1 : this.seatLanes / 3, clamp(dt * 4, 0, 1));
     const halfW = (ROAD_W / 2) * this.road.scale.x;
     const roadMat = this.road.material as THREE.MeshStandardMaterial;
-    const wantTex = hasCar ? this.laneTex : this.laneTex4;
+    const wantTex = hasCar ? this.laneTex : this.seatTex(this.seatLanes);
     if (roadMat.map !== wantTex) { roadMat.map = wantTex; roadMat.needsUpdate = true; }
     // PREVIEW: the chase camera rises and looks further so four lanes of cars in front are visible down the road
     this.previewLin = clamp(this.previewLin + (!hasCar && f ? 1 : -1) * (dt / 0.8), 0, 1);
@@ -706,9 +833,12 @@ export class Render3D implements Renderer {
     this.topLin = clamp(this.topLin + (o.topDown ? 1 : -1) * (dt / SWOOP_SEC), 0, 1);
     const topT = smoothstep(this.topLin);
     const top = topT > 0.5;
+    const firstPerson = this.orbit.dist < ORBIT_FP && !top;
     // Update 14: only the drawn lanes take room in the bird's-eye view
     const shown = f ? f.ghosts.filter((g) => f.rewind !== null || o.visible.has(g.id)) : [];
     const pack = packTopLanes(shown, o.bothSides, !!f?.rewind);
+    this.seatLanes = Math.max(1, pack.lanes);
+    this.topZoom = Math.exp(lerp(Math.log(this.topZoom), Math.log(this.topZoomTarget), clamp(dt * 8, 0, 1)));
     const td = this.topDims(pack.lanes);
     const yAt = this.applyHills(f, o, top);
     const focus = o.focus;
@@ -723,14 +853,17 @@ export class Render3D implements Renderer {
     this.prevVYou = vYouVis;
 
     // everything fixed to the ground scrolls at YOUR speed in the driver seat; the top road at the flow speed
-    this.scroll += vYouVis * dt;
-    this.laneTex.offset.y = -this.scroll / DASH_PERIOD;
-    this.laneTex4.offset.y = this.laneTex.offset.y;
+    const vScroll = Math.max(0, vYouVis); // the road never runs backwards on a favourable tick
+    this.scroll += vScroll * dt;
+    // the road plane is rotated −90° about X, so texture v grows away from the camera: a growing offset brings
+    // the dashes toward you (the old minus sign sent them away, which read as driving backwards)
+    this.laneTex.offset.y = this.scroll / DASH_PERIOD;
+    for (const tx of this.laneTexN.values()) tx.offset.y = this.laneTex.offset.y;
     const vFlow = Math.max(1, (focus ? focus.v_road : 0.05) * 30);
     this.topScroll += vFlow * dt;
-    this.topTex.offset.y = -this.topScroll / DASH_PERIOD;
+    this.topTex.offset.y = this.topScroll / DASH_PERIOD;
     this.grid.position.z = (((top ? this.topScroll : this.scroll) % 16) + 16) % 16;
-    this.poleScroll = (this.poleScroll + vYouVis * dt) % (POLE_GAP * POLES);
+    this.poleScroll = (this.poleScroll + vScroll * dt) % (POLE_GAP * POLES);
     for (let i = 0; i < POLES; i++) {
       let z = 20 - i * POLE_GAP + this.poleScroll;
       if (z > 20) z -= POLE_GAP * POLES;
@@ -738,7 +871,7 @@ export class Render3D implements Renderer {
       setInstance(this.poles, i * 2 + 1, halfW + 1.4, yAt(z), z);
     }
     this.poles.instanceMatrix.needsUpdate = true;
-    this.poles.visible = !top;
+    this.poles.visible = !top && o.poles; // Update 19: optional
     const cityZ = ((this.scroll % CITY_RANGE) + CITY_RANGE) % CITY_RANGE;
     this.cityA.position.z = cityZ + 40;
     this.cityB.position.z = cityZ + 40 - CITY_RANGE;
@@ -751,8 +884,10 @@ export class Render3D implements Renderer {
     this.kick *= Math.exp(-dt / 0.25);
 
     // FOV with speed and horizon; pitch with acceleration + reactive dip
-    const throttle = focus ? focus.throttle : 0;
-    const brake = focus ? focus.brake : 0;
+    // Update 15: the market's push drives every motion cue; the driver's pedals are never read here
+    const push = focus ? focus.impulse : 0;
+    const throttle = Math.max(0, push);  // surge: a tick against me
+    const brake = Math.max(0, -push);    // drag: a tick for me
     const hw = focus ? Math.min(focus.headway_s ?? Infinity, focus.headway_proj_s ?? Infinity) : Infinity;
     const driveFov = 58 + lift * 5 + fx * (16 * clamp(vYouVis / 45, 0, 1.4) + throttle * 3 - brake * 3);
     const targetFov = lerp(driveFov, TOP_FOV, topT);
@@ -771,14 +906,28 @@ export class Render3D implements Renderer {
 
     // camera: driver seat (chase / driver, lifts with the horizon, swings around on Q) blended with top-down
     this.lookT = lerp(this.lookT, o.lookBack && !top ? 1 : 0, clamp(dt * 6, 0, 1));
+    // mouse look-around (Update 14): a gentle tilt with the pointer; the wheel and a drag are the real controls
+    this.lookX = lerp(this.lookX, this.lookTx, clamp(dt * 5, 0, 1));
+    this.lookY = lerp(this.lookY, this.lookTy, clamp(dt * 5, 0, 1));
+    const lookUp = Math.max(0, this.lookY) * (1 - topT);
+    // orbit camera (Update 14): anchored above my car. The wheel zooms from a high chase down to first person, a
+    // drag orbits (yaw and elevation); the PREVIEW rise and the pointer tilt add to the elevation.
+    const ok = clamp(dt * 8, 0, 1);
+    this.orbit.dist = Math.exp(lerp(Math.log(this.orbit.dist), Math.log(this.orbitTarget.dist), ok));
+    this.orbit.yaw = lerp(this.orbit.yaw, this.orbitTarget.yaw, ok);
+    this.orbit.pitch = lerp(this.orbit.pitch, this.orbitTarget.pitch, ok);
+    const d = this.orbit.dist;
+    const anchorY = 1.5 + lift * 1.2;
+    const el = clamp(this.orbit.pitch + 0.22 * pk + 0.25 * lookUp, 0.02, 1.5);
+    const yaw = this.orbit.yaw + this.lookX * 0.12 * (1 - topT);
     const pos = new THREE.Vector3(), look = new THREE.Vector3();
-    if (o.camera === 'driver') {
-      pos.set(0.38 + sx, 1.28 + sy - brake * 0.05 * fx, 0.1);
-      look.set(0.38, 1.0, -30);
-    } else {
-      pos.set(sx, 3.3 + lift * 2.4 + 4.5 * pk + sy - brake * 0.25 * fx + throttle * 0.1 * fx + this.kick * 0.15, 7.8 + lift * 5 + 5 * pk + throttle * 0.4 * fx - this.kick * 0.5);
-      look.set(0, 0.9, -6.5 - lift * 12 - 20 * pk);
-    }
+    pos.set(
+      Math.sin(yaw) * Math.cos(el) * d + sx,
+      anchorY + Math.sin(el) * d + sy - brake * 0.12 * fx + this.kick * 0.1,
+      Math.cos(yaw) * Math.cos(el) * d + throttle * 0.3 * fx - this.kick * 0.4,
+    );
+    const reach = Math.max(12, 2.5 * d) + lift * 12 + 18 * pk + 16 * lookUp;
+    look.set(0, Math.max(0.6, anchorY - 0.7 - 0.05 * d), -reach);
     if (this.lookT > 0.001) {
       pos.lerp(new THREE.Vector3(0, 3.8 + lift * 2, -8 - lift * 3), this.lookT);
       look.lerp(new THREE.Vector3(0, 0.8, 50), this.lookT);
@@ -787,19 +936,11 @@ export class Render3D implements Renderer {
     let laneShift = 0;
     if (!hasCar && f && f.ghosts.length) {
       const prim = f.ghosts.find((g) => g.id === o.primaryGhostId);
-      if (prim) laneShift = LANE_X4[prim.lane] ?? 0;
-      else laneShift = f.ghosts.reduce((a, g) => a + (LANE_X4[g.lane] ?? 0), 0) / f.ghosts.length;
+      if (prim && pack.index.has(prim.id)) laneShift = this.seatX(pack.index.get(prim.id)!, pack.lanes);
     }
     this.camX = lerp(this.camX, laneShift, clamp(dt * 3, 0, 1));
     pos.x += this.camX;
     look.x += this.camX;
-    // mouse look-around (Update 14): mouse up = the camera rises and looks further, over my car; sideways = a glance
-    this.lookX = lerp(this.lookX, this.lookTx, clamp(dt * 5, 0, 1));
-    this.lookY = lerp(this.lookY, this.lookTy, clamp(dt * 5, 0, 1));
-    const lookUp = Math.max(0, this.lookY) * (1 - topT);
-    pos.y += lookUp * 2.6;
-    look.z -= lookUp * 16;
-    look.x += this.lookX * 5 * (1 - topT);
     if (topT > 0.001) {
       pos.lerp(new THREE.Vector3(0, td.camH, td.camZ), topT);
       look.lerp(new THREE.Vector3(0, 0, td.camZ), topT);
@@ -807,7 +948,12 @@ export class Render3D implements Renderer {
     this.camera.up.set(0, 1, 0).lerp(new THREE.Vector3(0, 0, -1), topT).normalize();
     this.camera.position.copy(pos);
     this.camera.lookAt(look);
-    this.camera.rotateX((this.pitch + this.lookY * 0.1) * (1 - this.lookT) * (1 - topT));
+    this.camera.rotateX(this.pitch * (1 - this.lookT) * (1 - topT));
+    // CHASE (Update 16): the rear camera for the mirror strip: above my car, looking back down the road
+    this.rearCam.position.set(this.camX, 4.2, -1.5);
+    this.rearCam.lookAt(this.camX, 1.0, 60);
+    this.rearCam.aspect = (this.width * REAR_W) / Math.max(1, this.height * REAR_H);
+    this.rearCam.updateProjectionMatrix();
 
     // CLEAR (Update 4): the 20-second stretch brightens the scene
     this.clearT = lerp(this.clearT, o.horizon?.clear ? 1 : 0, clamp(dt * 1.5, 0, 1));
@@ -849,7 +995,8 @@ export class Render3D implements Renderer {
       else for (const g of shown) if (!g.crashed) gaps.push(animGapUsd(g, f, o.anim));
       const mPerPx = td.depth / this.height;
       const capM = 1000 * mPerPx;              // 1 px per $0.001 at most
-      map = fitTopScale(gaps, td.ahead, td.behind, capM);
+      // Update 17: the dollar scale is fixed at zoom 1, so zooming out adds road around the cars instead of re-spacing them
+      map = fitTopScale(gaps, td.ahead / this.topZoom, td.behind / this.topZoom, capM);
       const pxPerUsd = map.scale / mPerPx;
       const usdPerCm = PX_PER_CM / pxPerUsd;
       this.topInfoCur = { pxPerUsd, usdPerCm, pctPerCm: price > 0 ? (usdPerCm / price) * 100 : 0, broken: map.broken, spreadUsd: map.spread };
@@ -873,20 +1020,32 @@ export class Render3D implements Renderer {
       const laneColor = new THREE.Color();
       for (const g of f.ghosts) {
         const drawn = f.rewind !== null || o.visible.has(g.id);
-        const show = drawn && (top ? !hasCar : (ghostLane(g, hasCar) >= 0 && (!o.bothSides || f.rewind !== null || g.side === o.focusSide)));
+        const show = drawn && (top ? !hasCar : ghostLane(g, hasCar) >= 0); // Update 18: the seat draws the same lanes as the bird's-eye, both sides side by side
         if (!show) continue;
         seen.add(g.id);
         const m = this.ghostModel(g);
         const isPrimary = g.id === o.primaryGhostId && !hasCar;
-        const x = top ? this.topX(pack.index.get(g.id) ?? 0, pack.lanes) : LANE_X4[g.lane];
-        m.car.g.visible = true;
-        setOpacity(m.car, top ? 0.95 : isPrimary ? 1 : 0.7);
+        const x = top ? this.topX(pack.index.get(g.id) ?? 0, pack.lanes) : this.seatX(pack.index.get(g.id) ?? 0, pack.lanes);
+        m.car.g.visible = !(firstPerson && isPrimary && !g.crashed); // first person: the car I sit in is not drawn
+        // Update 19: the focused lane is my car: solid and cyan-edged; the other lanes are ghosted in their colour
+        setOpacity(m.car, isPrimary ? 1 : top ? 0.5 : 0.4);
+        m.car.edgeMat.color.set(isPrimary ? NEON_CYAN : parseInt(LANE_COLORS[g.lane].slice(1), 16));
         setOpacity(m.ahead, top ? 0.95 : 0.9);
         // the car in front: dollar distance on the top-down scale, car lengths × gapScale in the driver seat
         const gapCl = g.crashed ? 0 : animGap(g, f, o.anim);
         const gapUsd = g.crashed ? 0 : animGapUsd(g, f, o.anim);
-        const targetZ = top ? zOfUsd(Math.max(0.0005, gapUsd)) : -Math.max(0.02, gapCl) * o.gapScale;
-        m.aheadZ = this.placeAhead(m.ahead, g, targetZ, m.aheadZ, dt, o, yAt, x, nowMs, isPrimary);
+        const chaseG = o.chase; // CHASE: the same number, drawn as the police car (behind me in the seat, ahead from above)
+        const behindG = chaseG && !top;
+        const targetZ = top ? zOfUsd(Math.max(0.0005, gapUsd)) : (behindG ? 1 : -1) * Math.max(0.02, gapCl) * o.gapScale;
+        if (chaseG && !m.monster) { m.monster = makeMonster(); tag(m.monster.g, 'ghost-ahead', g.id); this.scene.add(m.monster.g); this.pickables.push(m.monster.g); }
+        const aheadModel = chaseG && m.monster ? m.monster : m.ahead;
+        m.aheadZ = this.placeAhead(aheadModel, g, targetZ, m.aheadZ, dt, o, yAt, x, nowMs, isPrimary);
+        if (chaseG && m.monster) {
+          m.ahead.g.visible = false;
+          m.monster.g.scale.setScalar(0.8 + clamp(1 - gapCl / 3, 0, 1) * 0.4);
+          this.policeLights(m.monster, nowMs, clamp(0.3 + g.brake_ahead + (Number.isFinite(g.headway_s ?? Infinity) ? clamp((120 - (g.headway_s ?? 120)) / 120, 0, 1) : 0), 0, 1.6));
+          if (isPrimary && behindG) this.anchorRear(`${g.id}:liq`, 'text', x, 3.6, m.aheadZ, `it ${fmtPriceRaw(g.liq, MARKETS[f.market].priceDp)} · ${timeSpan(g.headway_s)}`, 'liqtag it', 'center');
+        } else if (m.monster) m.monster.g.visible = false;
         if (g.crashed) {
           m.carZ = lerp(m.carZ, m.aheadZ + 4.6, clamp(dt * 8, 0, 1));
           m.car.g.position.set(x, yAt(m.carZ), m.carZ);
@@ -912,7 +1071,7 @@ export class Render3D implements Renderer {
           // labels the view dictates (Update 8 §2 / 9 A2): lane name over the car in front, P&L by my car, distance between
           const pnl = g.pnl_usd - g.fees_usd;
           this.anchor(`${g.id}:pnl`, 'text', x, 0.4, 3.4, smoney(pnl), `pnl ${pnl >= 0 ? 'pos' : 'neg'}`); // the percent is on hover and in the lane table
-          if (isPrimary) this.anchor(`${g.id}:price`, 'text', x, 2.4, m.carZ, fmtPriceRaw(f.price, MARKETS[f.market].priceDp), 'price');
+          if (isPrimary) this.anchor(`${g.id}:price`, 'text', x, 2.4, m.carZ, `YOU · ${fmtPriceRaw(f.price, MARKETS[f.market].priceDp)}`, 'price');
           if (!g.crashed) this.anchor(`${g.id}:dist`, 'text', x, 0.4, m.aheadZ / 2, money(gapUsd), 'dist');
           // few lanes: the liq tag sits beside its car in front (LONG to the left, SHORT to the right); many: the left margin
           const few = pack.lanes <= 4;
@@ -921,7 +1080,7 @@ export class Render3D implements Renderer {
         } else {
           m.entry.visible = false;
           m.trail.visible = false;
-          if (isPrimary) this.anchor(`${g.id}:price`, 'text', x, 2.4, m.carZ, fmtPriceRaw(f.price, MARKETS[f.market].priceDp), 'price');
+          if (isPrimary) this.anchor(`${g.id}:price`, 'text', x, 2.4, m.carZ, `YOU · ${fmtPriceRaw(f.price, MARKETS[f.market].priceDp)}`, 'price');
         }
         // limit entry line
         if (g.is_limit && g.proposed_entry !== null && focus) {
@@ -950,18 +1109,28 @@ export class Render3D implements Renderer {
     for (const [id, m] of this.ghosts) {
       if (!seen.has(id)) {
         m.car.g.visible = false; m.ahead.g.visible = false; m.line.visible = false; m.entry.visible = false; m.trail.visible = false; m.impact.visible = false;
+        if (m.monster) m.monster.g.visible = false;
       }
     }
 
     // ---- the real car ----
     const car = f?.car ?? null;
-    const showYou = hasCar || !f || f.ghosts.length === 0;
+    const showYou = (hasCar || !f || f.ghosts.length === 0) && !firstPerson; // first person: my own car is not drawn
     this.you.g.visible = showYou;
     this.you.bodyMat.transparent = !hasCar; this.you.headMat.transparent = !hasCar; this.you.brakes.transparent = !hasCar;
     setOpacity(this.you, hasCar ? 1 : 0.35);
     if (car && f) {
-      const targetZ = top ? zOfUsd(Math.max(0.0005, animGapUsd(car, f, o.anim))) : -Math.max(0.02, animGap(car, f, o.anim)) * o.gapScale;
-      this.aheadZ = this.placeAhead(this.ahead, car, targetZ, this.aheadZ, dt, o, yAt, 0, nowMs, true);
+      const chase = o.chase; // CHASE (Update 16): the car in front is the police car; behind you in the seat, ahead from above (Update 19)
+      const behind = chase && !top;
+      const targetZ = top ? zOfUsd(Math.max(0.0005, animGapUsd(car, f, o.anim))) : (behind ? 1 : -1) * Math.max(0.02, animGap(car, f, o.anim)) * o.gapScale;
+      this.aheadZ = this.placeAhead(chase ? this.monster : this.ahead, car, targetZ, this.aheadZ, dt, o, yAt, 0, nowMs, true);
+      (chase ? this.ahead : this.monster).g.visible = false;
+      if (chase) {
+        this.monster.g.scale.setScalar(1 + clamp(1 - animGap(car, f, o.anim) / 3, 0, 1) * 0.5); // looms as it gains
+        const gaining = Number.isFinite(car.headway_s ?? Infinity) ? clamp((120 - (car.headway_s ?? 120)) / 120, 0, 1) : 0;
+        this.policeLights(this.monster, nowMs, clamp(0.35 + car.brake_ahead + gaining, 0, 1.6));
+        if (behind) this.anchorRear('ahead', 'ahead', 0, 3.8, this.aheadZ, `it ${fmtPriceRaw(car.liq, MARKETS[f.market].priceDp)} · ${timeSpan(car.headway_s)}`, 'liqtag it', 'center');
+      }
       let ez: number;
       if (top) {
         const dBehind = car.side * (f.price - car.entry);
@@ -972,11 +1141,15 @@ export class Render3D implements Renderer {
       this.entryLine.scale.x = top ? TOP_LANE_W / ROAD_W : 1;
       if (car.stop_dist !== null && car.stop_price !== null) {
         const sz = top ? Math.min(td.behind - 1, car.side * (f.price - car.stop_price) * (map?.scale ?? 1)) : car.stop_dist * o.gapScale;
-        this.stopCar.g.visible = true;
-        this.stopCar.g.position.set(0, 0, sz);
-        this.anchor('stop', 'stop', 0, 1.7, sz);
+        const chaseS = o.chase && !top; // CHASE: the stop is a wall ahead that you choose to hit
+        const zs = chaseS ? -sz : sz;
+        this.stopCar.g.visible = !chaseS;
+        this.wall.visible = chaseS;
+        this.stopCar.g.position.set(0, 0, zs);
+        this.wall.position.set(0, 1.2 + yAt(zs), zs);
+        this.anchor('stop', 'stop', 0, 1.7, zs);
         if (highlightMatches(o.highlight, 'stop')) ringTarget = this.stopCar.g.position.clone();
-      } else this.stopCar.g.visible = false;
+      } else { this.stopCar.g.visible = false; this.wall.visible = false; }
       // take profit / stop loss markers: TP on the favourable side (behind you), SL on the adverse side (ahead)
       const dpx = MARKETS[f.market].priceDp;
       f.exits.slice(0, MAX_EXITS).forEach((ex, i) => {
@@ -1084,7 +1257,7 @@ export class Render3D implements Renderer {
       c.z -= rel * c.speed + (c.speed - 1) * 0.6 * dt * o.speedScale;
       if (c.z < -ROAD_AHEAD * 0.9) c.z = 30;
       if (c.z > 40) c.z = -ROAD_AHEAD * 0.85;
-      c.model.g.position.set((hasCar ? LANE_X3 : LANE_X4)[c.lane], yAt(c.z), c.z);
+      c.model.g.position.set(hasCar ? LANE_X3[c.lane] : this.seatX(Math.min(c.lane, this.seatLanes - 1), this.seatLanes), yAt(c.z), c.z);
     }
 
     // headway tint on the sky
@@ -1094,5 +1267,21 @@ export class Render3D implements Renderer {
     this.fog.color.copy(this.scene.background as THREE.Color);
 
     this.renderer.render(this.scene, this.camera);
+    if (o.chase && !top && this.height > 4) {
+      // CHASE (Update 16): the mirror strip: the scene again through the rear camera, into a band near the top
+      const r = this.renderer;
+      const sh = Math.max(2, Math.round(this.height * REAR_H));
+      const y = Math.round(this.height * (1 - REAR_TOP)) - sh; // GL viewports count from the bottom
+      r.autoClear = false;
+      r.setScissorTest(true);
+      const x0 = Math.round(this.width * REAR_LEFT), sw = Math.max(2, Math.round(this.width * REAR_W));
+      r.setScissor(x0, y, sw, sh);
+      r.setViewport(x0, y, sw, sh);
+      r.clear(true, true, false);
+      r.render(this.scene, this.rearCam);
+      r.setScissorTest(false);
+      r.setViewport(0, 0, this.width, this.height);
+      r.autoClear = true;
+    }
   }
 }

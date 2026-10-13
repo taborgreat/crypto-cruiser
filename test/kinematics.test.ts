@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Kinematics, MarketKinematics, carKinematics, headway, headwayColor, projectedHeadway } from '../shared/kinematics.js';
+import { IMPULSE_FULL, Kinematics, MarketKinematics, carKinematics, headway, headwayColor, marketImpulse, projectedHeadway } from '../shared/kinematics.js';
 import { closeFeeUsd, liquidationPrice, openFeeUsd } from '../shared/jupiter.js';
 
 describe('headway', () => {
@@ -135,5 +135,16 @@ describe('trend / impulse decomposition (Update 3)', () => {
     expect(carKinematics({ ...base, vLnP: 1e-4, vTrend: 0 }).lurch).toBe(0);
     expect(carKinematics({ ...base, aTrend: -2e-4 }).brake_ahead).toBe(1);   // -100 * 2e-4 = -0.02 cl/s^2 decel
     expect(carKinematics({ ...base, aTrend: 2e-4 }).brake_ahead).toBe(0);    // accelerating away: no lights
+  });
+});
+
+describe('market impulse (Update 15)', () => {
+  it('a tick against me (gap closing) is a positive surge, a tick for me a negative drag, clamped to ±1', () => {
+    expect(marketImpulse(-IMPULSE_FULL / 2)).toBeCloseTo(0.5, 9);
+    expect(marketImpulse(IMPULSE_FULL / 4)).toBeCloseTo(-0.25, 9);
+    expect(marketImpulse(-10)).toBe(1);
+    expect(marketImpulse(10)).toBe(-1);
+    expect(marketImpulse(0)).toBe(0);
+    expect(marketImpulse(NaN)).toBe(0);
   });
 });

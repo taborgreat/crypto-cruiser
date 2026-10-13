@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fitTopScale, packTopLanes } from '../web/src/renderer.js';
+import { fitTopScale, packTopLanes } from '../shared/topscale.js';
 import type { GhostFrame } from '../shared/types.js';
 
 const AHEAD = 1000; // view units of road ahead of my car

@@ -194,8 +194,13 @@ const LABEL_BAND = 90; // px: labels this close in x are considered the same col
 export class Labels {
   private tags = new Map<string, { el: HTMLElement; text: string; cls: string }>();
   constructor(private root: HTMLElement) {}
-  update(anchors: LabelAnchor[], ctx: HoverCtx | null, labelAll: boolean): void {
-    if (!ctx) { if (this.tags.size) { this.root.innerHTML = ''; this.tags.clear(); } return; }
+  update(anchors: LabelAnchor[], ctx: HoverCtx | null, labelAll: boolean, mode: 'on' | 'faded' | 'side' | 'off' = 'on', width = 0, height = 0): void {
+    // Update 14: 'faded' dims every tag, 'side' parks them in a column at the right edge, 'off' draws none
+    this.root.classList.toggle('faded', mode === 'faded');
+    if (!ctx || mode === 'off') { if (this.tags.size) { this.root.innerHTML = ''; this.tags.clear(); } return; }
+    const side = mode === 'side';
+    void width;
+    this.root.classList.toggle('side', side);
     const seen = new Set<string>();
     const placed: Array<{ key: string; x: number; y: number; align: string; text: string; cls: string }> = [];
     for (const a of anchors) {
@@ -203,7 +208,7 @@ export class Labels {
       if (a.text === undefined && !labelAll) continue;
       const key = `${a.kind}:${a.id}`;
       seen.add(key);
-      placed.push({ key, x: a.x, y: a.y, align: a.align ?? 'left', text: a.text ?? labelText(a, ctx), cls: `label ${a.kind}${a.cls ? ' ' + a.cls : ''}` });
+      placed.push({ key, x: side ? 12 : a.x, y: a.y, align: side ? 'left' : (a.align ?? 'left'), text: a.text ?? labelText(a, ctx), cls: `label ${a.kind}${a.cls ? ' ' + a.cls : ''}` }); // side: a column on the left (Update 17: the right is the panels')
     }
     // collision avoidance: within a column, sort by y and push each tag below the previous one
     placed.sort((p, q) => p.y - q.y);
@@ -214,6 +219,7 @@ export class Labels {
         if (Math.abs(p.y - q.y) < LABEL_H) p.y = q.y + LABEL_H;
       }
     }
+    if (height > 0) for (const p of placed) p.y = Math.max(6, Math.min(height - 22, p.y)); // Update 19: never pushed off the bottom
     for (const p of placed) {
       let tag = this.tags.get(p.key);
       if (!tag) {

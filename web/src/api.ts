@@ -2,6 +2,7 @@ import type {
   ExitOrder, Flag, GhostParams, LiveOpenParams, Market, OpenParams, PedalAction, PositionState, RewindParams, Settings, SignRequest, StatusMsg, TradeRecord, ViewMode,
 } from '../../shared/types.js';
 import type { Candle } from '../../shared/candles.js';
+import type { ConditionsState } from '../../shared/conditions.js';
 
 export interface Result { ok: boolean; message: string; sign?: SignRequest; txid?: string; pending?: boolean }
 
@@ -48,6 +49,9 @@ export const api = {
   liveCancel: (id: string) => call<Result>('/api/live/cancel', { id }),
   livePositions: () => call<{ ok: boolean; message: string; positions: unknown[]; selected: PositionState | null; trades: TradeRecord[] }>('/api/live/positions'),
   trades: () => call<TradeRecord[]>('/api/trades'),
+  /** Update 17: the trades page: 'paper' or a wallet address. */
+  tradesFor: (wallet: string, limit = 300) => call<TradeRecord[]>(`/api/trades?wallet=${encodeURIComponent(wallet)}&limit=${limit}`),
+  conditionsDetail: () => call<{ state: ConditionsState | null; series: Array<{ h: string; res_sec: number; t0: number; closes: number[] }>; price: number }>('/api/conditions/detail'),
   candles: (intervalSec: number, limit = 1500) => call<{ interval: number; candles: Candle[] }>(`/api/candles?interval=${intervalSec}&limit=${limit}`),
   rewindStart: (p: RewindParams) => call<Result>('/api/rewind/start', p),
   rewindControl: (action: 'pause' | 'resume' | 'stop' | 'seek' | 'speed' | 'flag', value?: number | string) => call<Result>('/api/rewind/control', { action, value }),

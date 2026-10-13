@@ -4,6 +4,8 @@ import { headwayColor } from '../../shared/kinematics.js';
 import { MARKETS, type Frame, type GhostParams, type RewindLane, type ServerMsg, type SignRequest, type ViewMode } from '../../shared/types.js';
 import { Sound } from './audio.js';
 import { MUSIC_CREDIT, Music } from './music.js';
+import { Pages } from './pages.js';
+import type { GhostFrame } from '../../shared/types.js';
 import { api } from './api.js';
 import { BridgeChart } from './chart.js';
 import { installControls } from './controls.js';
@@ -33,6 +35,8 @@ const app = $('#app');
 const viewport = $('#viewport');
 const r2d = new Render2D();
 const r3d = new Render3D();
+r3d.setOrbit(store.state.visual.orbit, true);
+r3d.setTopZoom(store.state.visual.topZoom, true);
 viewport.appendChild(r2d.el);
 viewport.appendChild(r3d.el);
 if (!r3d.ok && store.state.visual.renderer === '3d') store.setVisual({ renderer: '2d' });
@@ -117,14 +121,14 @@ function confirmPedal(): boolean {
  */
 async function pedal(action: PedalArg): Promise<void> {
   const live = store.state.status?.engine === 'live';
-  if (live && action !== 'cruise' && action !== 'cruise_off') {
+  if (action !== 'cruise' && action !== 'cruise_off') { // Update 17: in practice too: a stray key must do nothing
     if (armed && armed.action === action) { confirmPedal(); return; }
     disarmPedal();
     armed = { action, timer: setTimeout(() => { armed = null; hud.arm(null); }, CONFIRM_MS) };
     hud.arm(action);
     hud.flash(action);
     sound.click();
-    toast(`REAL · ${hud.pedalName(action)}: press it again or Enter within 4 s to send`, 'warn', CONFIRM_MS);
+    toast(`${live ? 'REAL' : 'PRACTICE'} · ${hud.pedalName(action)} · push again (or Enter) to confirm`, 'warn', CONFIRM_MS);
     return;
   }
   await pedalNow(action);
@@ -164,8 +168,33 @@ function pushGhosts(ghosts: GhostParams[], primaryId: string): void {
   store.update((s) => { s.ghosts = ghosts; s.primaryGhostId = primaryId; });
   if (ghostPushTimer) clearTimeout(ghostPushTimer);
   ghostPushTimer = window.setTimeout(() => {
-    void api.ghosts(ghosts, primaryId).catch((e: Error) => toast(e.message, 'err'));
+    const attempt = (left: number) => { void api.ghosts(ghosts, primaryId).catch((e: Error) => { if (left > 0) setTimeout(() => attempt(left - 1), 1500); else toast(`lanes: ${e.message}`, 'warn'); }); };
+    attempt(3); // Update 18: a server restart drops the lanes; retry quietly instead of a red toast
   }, 120);
+}
+
+/** Update 18: REAL only: a sheet that says exactly what is about to be placed, red for short, green for long. */
+function confirmReal(g: GhostFrame, extra: { inputToken?: 'SOL' | 'USDC'; inputAmount?: number }): Promise<boolean> {
+  const long = g.side === 1;
+  const market = store.state.frame?.market ?? 'SOL-PERP';
+  const dp = MARKETS[market].priceDp;
+  const price = store.state.price ?? g.entry;
+  const liqPct = price > 0 ? (Math.abs(price - g.liq) / price) * 100 : 0;
+  showModal(`<h3 class="${long ? 'long' : 'short'}">${long ? '▲ LONG' : '▼ SHORT'} · REAL</h3>
+    <div class="quote">
+      <span>market</span><b>${market}</b>
+      <span>paying</span><b>${extra.inputAmount ?? '—'} ${extra.inputToken ?? ''}</b>
+      <span>size</span><b>${fmtUsd(g.size_usd, 0)} at ${g.leverage.toFixed(1)}×</b>
+      <span>entry</span><b>${g.is_limit && g.proposed_entry ? 'limit ' + fmtPrice(g.proposed_entry, dp) : 'market ~' + fmtPrice(g.entry, dp)}</b>
+      <span>liquidation</span><b>${fmtPrice(g.liq, dp)} (${fmtPct(liqPct)} ${long ? 'below' : 'above'})</b>
+      <span>fees</span><b>${fmtUsd(g.fees_usd)} open + close</b>
+    </div>
+    <p class="muted small">Jupiter fills in seconds. Every pedal after this is a real transaction.</p>
+    <div class="actions"><button id="goCancel">cancel</button><button id="goConfirm" class="${long ? 'go-long' : 'go-short'}">${long ? '▲ PLACE LONG' : '▼ PLACE SHORT'}</button></div>`);
+  return new Promise((resolve) => {
+    modal.querySelector('#goCancel')!.addEventListener('click', () => { hideModal(); resolve(false); });
+    modal.querySelector('#goConfirm')!.addEventListener('click', () => { hideModal(); resolve(true); });
+  });
 }
 
 async function go(): Promise<void> {
@@ -175,6 +204,10 @@ async function go(): Promise<void> {
   const fc = focusCar(s.frame, s.primaryGhostId);
   store.update((x) => { x.frozenGhost = fc?.ghost ?? null; });
   sound.click();
+  if (s.status?.engine === 'live' && fc?.ghost) {
+    const ok = await confirmReal(fc.ghost, panel.goExtra());
+    if (!ok) { panel.setMessage('Not placed.'); return; }
+  }
   try {
     const r = await api.go(s.primaryGhostId, panel.goExtra());
     if (r.sign) {
@@ -202,12 +235,21 @@ function dropFlag(): void {
   else void api.flag().then((r) => toast(`Flag at ${fmtPrice(r.flag.price)}`, 'good', 2500)).catch((e: Error) => toast(e.message, 'err'));
 }
 
+const TAG_MODES = ['on', 'faded', 'side', 'off'] as const;
+/** Update 14: the tags above the cars cycle on → faded → to the side → off. */
+function cycleTags(): void {
+  const i = TAG_MODES.indexOf(store.state.visual.tags);
+  store.setVisual({ tags: TAG_MODES[(i + 1) % TAG_MODES.length], tagsChosen: true });
+}
+
 const hud = new Hud($('#hud'), {
   onPedal: (a) => void pedal(a),
   onSettings: () => settings.toggle(),
   onRewind: () => rewindPanel.toggle(),
   onRenderer: () => store.setVisual({ renderer: store.state.visual.renderer === '3d' ? '2d' : '3d' }),
-  onCamera: () => store.setVisual({ camera: store.state.visual.camera === 'chase' ? 'driver' : 'chase' }),
+  onTags: () => cycleTags(),
+  onMute: () => store.setVisual({ muted: !store.state.visual.muted }),
+  onChase: () => store.setVisual({ chase: !store.state.visual.chase }),
   onTopDown: () => store.setVisual({ topDown: !store.state.visual.topDown }),
   onExit: () => {
     if (store.state.frame?.rewind) void api.rewindControl('stop').catch(() => undefined);
@@ -219,6 +261,8 @@ const hud = new Hud($('#hud'), {
   onLabels: () => store.setVisual({ labelAll: !store.state.visual.labelAll }),
   onStripClick: (t, price) => { if (!store.state.visual.chartOpen) store.setVisual({ chartOpen: true }); chart.focusTime(t, price); },
   onExits: () => exitsPanel.toggle(),
+  onPage: (k) => pages.toggle(k),
+  onHorizon: (sec) => void api.settings(sec === null ? { autoHorizonRoom: true } : { horizonSec: sec, autoHorizonRoom: false }).catch((e: Error) => toast(e.message, 'err')),
 });
 const exitsEl = document.createElement('div');
 exitsEl.className = 'exits-panel';
@@ -227,6 +271,8 @@ $('#hud').appendChild(exitsEl);
 const exitsPanel = new ExitsPanel(exitsEl, { getState: () => store.state, toast });
 const settings = new SettingsPanel($('#settings'), store);
 const inspect = new InspectPanel($('#inspect'));
+// Update 17: full pages (trades, conditions) over the stage
+const pages = new Pages($('#stage'));
 const panel = new GhostPanel($('#start'), {
   store,
   onGhostsChanged: pushGhosts,
@@ -234,6 +280,7 @@ const panel = new GhostPanel($('#start'), {
   onRewind: () => rewindPanel.toggle(),
   onSettings: () => settings.toggle(),
   onResume: goDrive,
+  onPage: (k) => pages.toggle(k),
   onCancelOrder: () => void api.cancelOrder().then(async (r) => { if (r.sign) await handleSign(r.sign); else toast(r.message, r.ok ? 'good' : 'warn'); }).catch((e: Error) => toast(e.message, 'err')),
 });
 const rewindPanel = new RewindPanel($('#rewind'), {
@@ -262,6 +309,7 @@ function hoverCtx(): HoverCtx | null {
 
 installControls({
   confirmPedal: () => confirmPedal(),
+  notice: (t) => toast(t, 'warn', 2500),
   pedal: (a) => void pedal(a),
   go: () => void go(),
   nudgeLimit: (dir) => panel.nudgeLimit(dir),
@@ -273,7 +321,7 @@ installControls({
   },
   toggleTopDown: () => store.setVisual({ topDown: !store.state.visual.topDown }),
   setRenderer: (r) => store.setVisual({ renderer: r }),
-  toggleCamera: () => store.setVisual({ camera: store.state.visual.camera === 'chase' ? 'driver' : 'chase' }),
+  toggleChase: () => store.setVisual({ chase: !store.state.visual.chase }),
   toggleSettings: () => settings.toggle(),
   toggleRewind: () => rewindPanel.toggle(),
   toggleHelp: () => { helpVisible = !helpVisible; hud.setHelp(helpVisible); },
@@ -283,7 +331,7 @@ installControls({
   lookBack: (down) => { if (store.state.lookBack !== down) store.update((s) => { s.lookBack = down; }); },
   flag: dropFlag,
   rewindKey: (k) => rewindPanel.key(k),
-  escape: () => { disarmPedal();
+  escape: () => { disarmPedal(); if (pages.close()) return;
     if (!modal.hidden) return;
     if (store.state.results) { closeResults(); return; }
     if (helpVisible) { helpVisible = false; hud.setHelp(false); return; }
@@ -298,6 +346,13 @@ installControls({
   let dragStartY: number | null = null;
   let moved = false;
   let lastPick = 0;
+  let dragMode: 'orbit' | 'limit' = 'orbit';
+  let dragX = 0;
+  let dragY = 0;
+  let orbitSave: ReturnType<typeof setTimeout> | null = null;
+  const saveOrbit = () => { if (orbitSave) clearTimeout(orbitSave); orbitSave = setTimeout(() => store.setVisual({ orbit: r3d.getOrbit() }), 400); };
+  let topSave: ReturnType<typeof setTimeout> | null = null;
+  const saveTop = () => { if (topSave) clearTimeout(topSave); topSave = setTimeout(() => store.setVisual({ topZoom: r3d.getTopZoom() }), 400); };
   const setHover = (hit: HoverHit | null) => {
     const s = store.state;
     if (s.hoverPinned) return;
@@ -309,8 +364,10 @@ installControls({
   viewport.addEventListener('pointerdown', (e) => {
     tooltip.hide();
     if (e.button !== 0) return;
-    dragStartY = e.clientY; moved = false;
-    if (store.state.screen === 'ghost' && !store.state.frame?.rewind) viewport.setPointerCapture(e.pointerId);
+    dragStartY = e.clientY; dragX = e.clientX; dragY = e.clientY; moved = false;
+    // a plain drag orbits the camera (Update 14); shift-drag scrubs the limit entry in PREVIEW
+    dragMode = e.shiftKey && store.state.screen === 'ghost' && !store.state.frame?.rewind ? 'limit' : 'orbit';
+    viewport.setPointerCapture(e.pointerId);
   });
   viewport.addEventListener('pointermove', (e) => {
     const now = performance.now();
@@ -318,7 +375,16 @@ installControls({
       const r = viewport.getBoundingClientRect();
       if (r.width > 0 && r.height > 0) r3d.setLook(((e.clientX - r.left) / r.width) * 2 - 1, 1 - ((e.clientY - r.top) / r.height) * 2);
     }
-    if (dragStartY !== null && store.state.screen === 'ghost' && !store.state.frame?.rewind) {
+    if (dragStartY !== null && dragMode === 'orbit') {
+      const dx = e.clientX - dragX, dy = e.clientY - dragY;
+      if (Math.abs(dx) + Math.abs(dy) >= 3 || moved) {
+        moved = true;
+        if (store.state.visual.renderer === '3d') { r3d.dragBy(dx, dy); saveOrbit(); }
+        dragX = e.clientX; dragY = e.clientY;
+        return;
+      }
+    }
+    if (dragStartY !== null && dragMode === 'limit' && store.state.screen === 'ghost' && !store.state.frame?.rewind) {
       const dy = dragStartY - e.clientY;
       if (Math.abs(dy) >= 4 || moved) {
         moved = true;
@@ -345,6 +411,16 @@ installControls({
   };
   viewport.addEventListener('pointerup', end);
   viewport.addEventListener('pointercancel', end);
+  // the wheel zooms the seat camera: out to a high chase, in to first person (Update 14); double-click resets it
+  viewport.addEventListener('wheel', (e) => {
+    const s = store.state;
+    if (s.visual.renderer !== '3d') return;
+    const factor = Math.exp(e.deltaY * 0.0012);
+    if (s.visual.topDown && !s.frame?.car && !s.waitingFill) { r3d.zoomTopBy(factor); saveTop(); } // Update 16: the bird's-eye zooms too
+    else { r3d.zoomBy(factor); saveOrbit(); }
+    e.preventDefault();
+  }, { passive: false });
+  viewport.addEventListener('dblclick', () => { r3d.resetOrbit(); saveOrbit(); });
   viewport.addEventListener('pointerleave', () => { r3d.setLook(0, 0); if (!store.state.hoverPinned) { store.state.hover = null; tooltip.hide(); chart.highlight(null); } });
   // the mirror and the strip: price and time under the pointer (Update 10)
   const mirror = hud.mirrorEl;
@@ -566,7 +642,11 @@ connectWs((m: ServerMsg) => {
     default:
       break;
   }
-}, (connected) => store.update((s) => { s.connected = connected; }));
+}, (connected) => {
+  const was = store.state.connected;
+  store.update((s) => { s.connected = connected; });
+  if (connected && !was) pushGhosts(panel.params(), panel.primaryId); // Update 18: the server forgot the lanes while it was away
+});
 
 function onEvent(kind: string, message: string, detail: unknown): void {
   switch (kind) {
@@ -702,6 +782,8 @@ function loop(now: number): void {
   const color = fc ? headwayColor(Math.min(fc.car.headway_s ?? Infinity, fc.car.headway_proj_s ?? Infinity), thr) : 'green';
   if (jolt > 0) jolt = Math.max(0, jolt - dt * 1.6);
   const topDown = s.visual.topDown && !f?.car && !s.waitingFill;
+  $('#hud').classList.toggle('caught', s.visual.chase && color === 'red' && !!f?.car); // CHASE: it is on you
+  $('#hud').classList.toggle('tags-faded', s.visual.tags === 'faded'); // Update 17: the ticker fades with the tags
   const visible = laneVisibility(s);
   chart.visibleLanes = visible;
   const opts: RenderOpts = {
@@ -719,6 +801,8 @@ function loop(now: number): void {
     focusSide: fc?.car.side ?? panel.side,
     primaryGhostId: s.primaryGhostId,
     visible,
+    chase: s.visual.chase,
+    poles: s.visual.poles,
     jolt,
     effects: s.visual.effects,
     anim: s.anim,
@@ -736,7 +820,7 @@ function loop(now: number): void {
   activeRenderer.render(f, dt, opts, now);
   hud.fast(s);
   const ctx = hoverCtx();
-  labels.update(activeRenderer.anchors(), ctx, s.visual.labelAll && !topDown);
+  labels.update(activeRenderer.anchors(), ctx, s.visual.labelAll && !topDown, s.visual.tags, viewport.clientWidth, viewport.clientHeight);
   if (now - lastText > 100) {
     lastText = now;
     if (uiDirty) { uiDirty = false; panel.update(s); settings.update(s); render(); }
@@ -753,13 +837,14 @@ function loop(now: number): void {
     rewindPanel.update(s);
     exitsPanel.update(s);
     inspect.update(f, s.status, now);
+    pages.setContext(s.status, s.ghosts[0]?.leverage ?? s.status?.position?.leverage ?? 100);
     chart.update(f, s.status, s.anim, now);
-    sound.enabled = s.visual.sound;
+    sound.enabled = s.visual.sound && !s.visual.muted;
     sound.volume = s.visual.volume;
     // race music only while actually driving (never on the menu, never over the results card); its own widget, never a toast
     const racing = s.screen === 'drive' && !!f?.car && !s.results && !f?.rewind;
-    music.update(racing, s.visual.music ? s.visual.musicVolume : 0);
-    musicEl.hidden = !(racing && s.visual.music && s.visual.musicVolume > 0);
+    music.update(racing, s.visual.music && !s.visual.muted ? s.visual.musicVolume : 0);
+    musicEl.hidden = !(racing && s.visual.music && !s.visual.muted && s.visual.musicVolume > 0);
     const c = fc?.car;
     sound.update({
       active: !!c && !s.results && !(f?.rewind?.paused),
@@ -768,8 +853,9 @@ function loop(now: number): void {
       vRoad: c?.v_road ?? 0,
       headway: c ? Math.min(c.headway_s ?? Infinity, c.headway_proj_s ?? Infinity) : Infinity,
       color,
-      throttle: c?.throttle ?? 0,
-      brake: c?.brake ?? 0,
+      impulse: c?.impulse ?? 0,
+      driving: !!f?.car,
+      chase: s.visual.chase,
       horizonSec: f?.horizon.h ?? 60,
       thresholds: { green: thr.green, orange: thr.orange, critical: thr.critical },
     });
